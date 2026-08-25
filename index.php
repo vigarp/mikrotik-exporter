@@ -288,14 +288,32 @@ if ($API->connect($host, $username, $password)) {
 
         $API->disconnect();
 
-        // Build Final JSON Response
-        $isOnline = !empty($active);
+        // Evaluate Diagnostic Statuses for 3 Failure Scenarios
+        $isOnline    = !empty($active);
+        $userStatus  = $isOnline ? 'ONLINE' : 'OFFLINE';
+        $gwStatusStr = $gatewayStatus['status'] ?? 'UNKNOWN';
+        $routerStatus= 'ONLINE';
+
+        $overallHealth = 'ALL_SYSTEMS_OPERATIONAL';
+        if ($userStatus === 'OFFLINE') {
+            $overallHealth = 'USER_DISCONNECTED';
+        } elseif ($gwStatusStr === 'UNREACHABLE') {
+            $overallHealth = 'ISP_GATEWAY_DOWN';
+        }
+
         $statusCode = $isOnline ? 200 : 503;
 
         respond($statusCode, [
             'status'    => $isOnline ? 'UP' : 'DOWN',
             'online'    => $isOnline,
             'timestamp' => date('c'),
+            'diagnostics' => [
+                'router_connected'   => true,
+                'router_status'      => $routerStatus,
+                'user_pppoe_status'  => $userStatus,
+                'isp_gateway_status' => $gwStatusStr,
+                'overall_health'     => $overallHealth
+            ],
             'home_connection' => [
                 'user'            => $pppoeUser,
                 'ip_address'      => $active[0]['address'] ?? null,
@@ -324,6 +342,13 @@ if ($API->connect($host, $username, $password)) {
         'online'    => false,
         'user'      => $pppoeUser,
         'timestamp' => date('c'),
+        'diagnostics' => [
+            'router_connected'   => false,
+            'router_status'      => 'OFFLINE',
+            'user_pppoe_status'  => 'UNKNOWN',
+            'isp_gateway_status' => 'UNKNOWN',
+            'overall_health'     => 'ROUTER_UNREACHABLE'
+        ],
         'message'   => 'Unable to connect to RouterOS API'
     ]);
 }
