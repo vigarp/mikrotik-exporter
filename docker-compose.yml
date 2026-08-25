@@ -6,4 +6,10 @@ services:
     container_name: mikrotik_rest_api
     env_file:
       - .env
+    networks:
+      - kuma-net
     restart: unless-stopped
+
+networks:
+  kuma-net:
+    external: true
