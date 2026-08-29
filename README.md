@@ -7,7 +7,7 @@ A lightweight, zero-dependency RESTful API Wrapper designed to monitor MikroTik 
 ## 🌟 Key Features
 
 - **Single Unified Endpoint**: Clean JSON response providing all vital network metrics in a single API request.
-- **PPPoE Session & Real-Time Traffic**: Tracks active connection status, IP address, uptime, MAC address, bandwidth limits (Mbps), and live upload/download bitrate (Kbps/bps).
+- **PPPoE Session, Traffic & Data Usage**: Tracks active connection status, IP address, uptime, MAC address, bandwidth limits (Mbps), live upload/download bitrate (Kbps/bps), and total session data consumption (MB/GB).
 - **ISP Gateway Monitoring**: Tracks default route (`0.0.0.0/0`) reachability to verify if the ISP WAN uplink is UP or DOWN.
 - **Router Hardware Health**: Monitors CPU load (%), RAM usage (MB), RouterOS version, board name, and system uptime.
 - **Public IP & DNS Resolver Info**: Detects public WAN IP and configured DNS resolver servers.
@@ -76,6 +76,17 @@ ENABLE_EXTERNAL_INTEL=false
             "max_upload_mbps": 50,
             "max_download_mbps": 50,
             "raw_limit": "50M/50M"
+        },
+        "data_usage": {
+            "session_download_mb": 14250.75,
+            "session_upload_mb": 1820.30,
+            "session_total_mb": 16071.05,
+            "session_total_human": "15.70 GB",
+            "session_download_human": "13.92 GB",
+            "session_upload_human": "1.78 GB",
+            "tx_bytes": 14942767104,
+            "rx_bytes": 1908734976,
+            "total_bytes": 16851502080
         },
         "live_traffic": {
             "interface_name": "<pppoe-your_pppoe_user>",

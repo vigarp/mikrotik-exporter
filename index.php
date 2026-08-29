@@ -72,6 +72,16 @@ function parseRateLimit($rateStr) {
     ];
 }
 
+// Helper to format byte counts into human-readable strings (e.g., "1.45 GB", "320.10 MB")
+function formatBytes($bytes, $precision = 2) {
+    if (!$bytes || $bytes <= 0) return '0 B';
+    $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    $pow = min((int)floor(log($bytes, 1024)), count($units) - 1);
+    if ($pow < 0) $pow = 0;
+    $bytes /= pow(1024, $pow);
+    return round($bytes, $precision) . ' ' . $units[$pow];
+}
+
 // Helper to fetch IP Intelligence (ASN, ISP, Region) via Cloudflare Radar API with IP-API fallback
 function getIpIntelligence($publicIp, $cfToken = null) {
     if (!$publicIp) return null;
@@ -161,8 +171,9 @@ if ($API->connect($host, $username, $password)) {
             $rateLimit = parseRateLimit($rateLimitStr);
         }
 
-        // 3. Monitor Live Traffic if user is online
+        // 3. Monitor Live Traffic & Session Data Usage if user is online
         $trafficData = null;
+        $dataUsage   = null;
         if (!empty($active)) {
             $interfaceCandidates = [
                 '<pppoe-' . $pppoeUser . '>',
@@ -171,6 +182,7 @@ if ($API->connect($host, $username, $password)) {
                 $pppoeUser
             ];
 
+            $matchedIface = null;
             foreach ($interfaceCandidates as $ifaceName) {
                 $API->write('/interface/monitor-traffic', false);
                 $API->write('=interface=' . $ifaceName, false);
@@ -178,6 +190,7 @@ if ($API->connect($host, $username, $password)) {
                 $traffic = $API->read();
 
                 if (!empty($traffic) && !isset($traffic['!trap'])) {
+                    $matchedIface = $ifaceName;
                     $txBps = (int)($traffic[0]['tx-bits-per-second'] ?? 0);
                     $rxBps = (int)($traffic[0]['rx-bits-per-second'] ?? 0);
                     $trafficData = [
@@ -188,6 +201,31 @@ if ($API->connect($host, $username, $password)) {
                         'rx_bps'        => $rxBps
                     ];
                     break;
+                }
+            }
+
+            // Query total bytes transferred during this active session
+            if ($matchedIface) {
+                $API->write('/interface/print', false);
+                $API->write('?name=' . $matchedIface);
+                $ifaceStats = $API->read();
+
+                if (!empty($ifaceStats) && isset($ifaceStats[0])) {
+                    $rxBytes = (float)($ifaceStats[0]['rx-byte'] ?? 0);
+                    $txBytes = (float)($ifaceStats[0]['tx-byte'] ?? 0);
+                    $totalBytes = $rxBytes + $txBytes;
+
+                    $dataUsage = [
+                        'session_download_mb'    => round($txBytes / 1048576, 2),
+                        'session_upload_mb'      => round($rxBytes / 1048576, 2),
+                        'session_total_mb'       => round($totalBytes / 1048576, 2),
+                        'session_total_human'    => formatBytes($totalBytes),
+                        'session_download_human' => formatBytes($txBytes),
+                        'session_upload_human'   => formatBytes($rxBytes),
+                        'tx_bytes'               => (int)$txBytes,
+                        'rx_bytes'               => (int)$rxBytes,
+                        'total_bytes'            => (int)$totalBytes
+                    ];
                 }
             }
         }
@@ -321,6 +359,7 @@ if ($API->connect($host, $username, $password)) {
                 'caller_id'       => $active[0]['caller-id'] ?? null,
                 'profile_name'    => $profileName,
                 'bandwidth_limit' => $rateLimit,
+                'data_usage'      => $dataUsage,
                 'live_traffic'    => $trafficData
             ],
             'network_health' => [
