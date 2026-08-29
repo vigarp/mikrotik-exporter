@@ -34,12 +34,29 @@ $enableIntel = (isset($_GET['enrich']) && ($_GET['enrich'] === 'true' || $_GET['
              || (isset($_GET['intel']) && ($_GET['intel'] === 'true' || $_GET['intel'] === '1'))
              || (getenv('ENABLE_EXTERNAL_INTEL') === 'true' || ($_ENV['ENABLE_EXTERNAL_INTEL'] ?? '') === 'true');
 $timeout     = (int)(getenv('MIKROTIK_TIMEOUT') ?: ($_ENV['MIKROTIK_TIMEOUT'] ?? ($_SERVER['MIKROTIK_TIMEOUT'] ?? 5)));
+$enableLog   = getenv('ENABLE_LOG') !== false 
+             ? (filter_var(getenv('ENABLE_LOG') ?: ($_ENV['ENABLE_LOG'] ?? true), FILTER_VALIDATE_BOOLEAN))
+             : true;
 
 header('Content-Type: application/json; charset=utf-8');
 
 function respond($status_code, $data) {
+    global $enableLog;
     http_response_code($status_code);
-    echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+    // Output formatted JSON to stdout/stderr so it is captured in Portainer / Docker logs
+    if ($enableLog) {
+        $reqMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+        $reqUri    = $_SERVER['REQUEST_URI'] ?? '/';
+        $clientIp  = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        $timestamp = date('D M d H:i:s Y');
+        $logHeader = sprintf("[%s] [%s] %s %s -> HTTP %d", $timestamp, $clientIp, $reqMethod, $reqUri, $status_code);
+
+        @file_put_contents('php://stdout', $logHeader . "\n" . $json . "\n\n");
+    }
+
+    echo $json;
     exit;
 }
 

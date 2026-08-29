@@ -35,9 +35,10 @@ MIKROTIK_PASS=your_strong_password
 MIKROTIK_PPPOE_USER=your_pppoe_username
 MIKROTIK_TIMEOUT=5
 
-# Optional: Cloudflare Radar API Token & Enrichment Default
+# Optional: Cloudflare Radar API Token, Intel, and Console Logging
 CLOUDFLARE_RADAR_TOKEN=your_cloudflare_radar_api_token
 ENABLE_EXTERNAL_INTEL=false
+ENABLE_LOG=true
 ```
 
 > ⚠️ **Security Warning**: Never commit your `.env` file to Git! Ensure `.env` is listed in your `.gitignore`.
