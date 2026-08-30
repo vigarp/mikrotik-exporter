@@ -175,7 +175,7 @@ ENABLE_LOG=true
    - Create a second monitor with type `HTTP(s) - Json Query`.
    - **Json Path**: `$.network_health.isp_gateway.status`
    - **Expected Value**: `REACHABLE`
-   - **Friendly Name**: `ISP WAN Uplink (Indotel)`
+   - **Friendly Name**: `ISP WAN Uplink (Telkom)`
 
 ---
 
