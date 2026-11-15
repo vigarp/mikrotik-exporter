@@ -387,7 +387,7 @@
           <span class="tab-endpoint">/router</span>
         </button>
         <button type="button" role="tab" id="tab-olt" data-tab="olt" aria-selected="false">
-          <span>OLT PON01</span>
+          <span>HSGQ OLT</span>
           <span class="tab-endpoint">/olt</span>
         </button>
         <button type="button" role="tab" id="tab-platforms" data-tab="platforms" aria-selected="false">
@@ -442,10 +442,20 @@
       </section>
 
       <section role="tabpanel" id="panel-olt" aria-labelledby="tab-olt" hidden>
-        <article class="card">
-          <h2>HSGQ OLT PON Traffic</h2>
-          <dl class="kv-list" id="olt-list"></dl>
-        </article>
+        <div class="stack">
+          <article class="card">
+            <h2>OLT System &amp; PON Fleet</h2>
+            <dl class="kv-list" id="olt-system-list"></dl>
+          </article>
+          <article class="card">
+            <h2>HSGQ OLT PON Traffic</h2>
+            <dl class="kv-list" id="olt-list"></dl>
+          </article>
+          <article class="card">
+            <h2>All PON Ports (ONT Online / Offline)</h2>
+            <dl class="kv-list" id="olt-ports-list"></dl>
+          </article>
+        </div>
       </section>
 
       <section role="tabpanel" id="panel-platforms" aria-labelledby="tab-platforms" hidden>
@@ -629,6 +639,15 @@
           ['Router Uptime', rs?.uptime || '-'],
         ]);
       } else if (tabName === 'olt') {
+        const sys = data.olt_system || {};
+        const ponAll = data.olt_pon_all || {};
+        renderList('olt-system-list', [
+          ['Model / Vendor', sys.product_name ? `${sys.product_name} (${sys.vendor || 'HSGQ'})` : '-'],
+          ['Firmware / Hardware', sys.fw_ver ? `${sys.fw_ver} (${sys.hw_ver || '-'})` : '-'],
+          ['CPU / Memory Usage', sys.cpu_usage_percent !== undefined ? `${sys.cpu_usage_percent}% / ${sys.memory_usage_percent ?? '-'}%` : '-'],
+          ['Total ONTs (Online / Offline)', ponAll.total_ont !== undefined ? `${ponAll.total_online} online / ${ponAll.total_offline} offline (Total ${ponAll.total_ont})` : '-'],
+        ]);
+
         const op = data.olt_pon || {};
         const latest = op.latest || {};
         const sum = op.summary || {};
@@ -645,6 +664,12 @@
           ['Errors (RX / TX)', sum.rx_error_frames !== undefined ? `${sum.rx_error_frames} / ${sum.tx_error_frames}` : '-'],
           ['Discards (RX / TX)', sum.rx_discard_frames !== undefined ? `${sum.rx_discard_frames} / ${sum.tx_discard_frames}` : '-'],
         ]);
+
+        const portRows = (ponAll.ports || []).map((p) => [
+          `${p.port_name} (${p.link_status} / ${p.admin_status})`,
+          `${p.online} online · ${p.offline} offline`
+        ]);
+        renderList('olt-ports-list', portRows.length ? portRows : [['Status', 'No PON summary available']]);
       } else if (tabName === 'platforms') {
         lastPlatformData = data;
         const pl = data.platforms || {};

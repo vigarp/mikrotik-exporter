@@ -538,8 +538,8 @@ function loginHsgqOlt($oltBaseUrl, $oltUser, $oltPass, $oltLoginKey, $timeout, $
     return ['ok' => true, 'token' => $responseToken];
 }
 
-function requestOltPonJson($oltBaseUrl, $token, $portId, $timeout, $proxy) {
-    $url = "{$oltBaseUrl}/switch_port?form=statistic_monitor&port_id={$portId}";
+function requestHsgqOltJson($oltBaseUrl, $token, $pathAndQuery, $timeout, $proxy) {
+    $url = "{$oltBaseUrl}{$pathAndQuery}";
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_RETURNTRANSFER => true,
@@ -600,6 +600,19 @@ function requestOltPonJson($oltBaseUrl, $token, $portId, $timeout, $proxy) {
     return ['ok' => true, 'json' => $json];
 }
 
+function callOltWithAutoLogin($oltBaseUrl, &$token, $oltUser, $oltPass, $oltLoginKey, $pathAndQuery, $timeout, $proxy) {
+    $res = requestHsgqOltJson($oltBaseUrl, $token, $pathAndQuery, $timeout, $proxy);
+    if (!$res['ok'] && !empty($res['auth_failed']) && $oltUser !== '' && $oltPass !== '') {
+        $login = loginHsgqOlt($oltBaseUrl, $oltUser, $oltPass, $oltLoginKey, $timeout, $proxy);
+        if (!$login['ok']) {
+            return ['ok' => false, 'status_code' => 503, 'error' => $login['error']];
+        }
+        $token = $login['token'];
+        $res = requestHsgqOltJson($oltBaseUrl, $token, $pathAndQuery, $timeout, $proxy);
+    }
+    return $res;
+}
+
 function fetchOltPonStats($oltBaseUrl, $oltToken, $oltUser, $oltPass, $oltLoginKey, $portId, $timeout, $proxy) {
     if ($oltBaseUrl === '') {
         return [
@@ -637,15 +650,7 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $oltUser, $oltPass, $oltLoginK
         $token = $login['token'];
     }
 
-    $res = requestOltPonJson($oltBaseUrl, $token, $portId, $timeout, $proxy);
-    if (!$res['ok'] && !empty($res['auth_failed']) && $oltUser !== '' && $oltPass !== '') {
-        $login = loginHsgqOlt($oltBaseUrl, $oltUser, $oltPass, $oltLoginKey, $timeout, $proxy);
-        if (!$login['ok']) {
-            return ['ok' => false, 'status_code' => 503, 'error' => $login['error']];
-        }
-        $res = requestOltPonJson($oltBaseUrl, $login['token'], $portId, $timeout, $proxy);
-    }
-
+    $res = callOltWithAutoLogin($oltBaseUrl, $token, $oltUser, $oltPass, $oltLoginKey, "/switch_port?form=statistic_monitor&port_id={$portId}", $timeout, $proxy);
     if (!$res['ok']) {
         return ['ok' => false, 'status_code' => $res['status_code'], 'error' => $res['error']];
     }
@@ -681,9 +686,58 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $oltUser, $oltPass, $oltLoginK
     $sampleCount = count($rxRates);
     $portEnabled = ((int)($data['status'] ?? 0)) === 1;
 
+    $sysRes = callOltWithAutoLogin($oltBaseUrl, $token, $oltUser, $oltPass, $oltLoginKey, '/board?info=system', $timeout, $proxy);
+    $cpuRes = callOltWithAutoLogin($oltBaseUrl, $token, $oltUser, $oltPass, $oltLoginKey, '/board?info=cpu', $timeout, $proxy);
+    $ponRes = callOltWithAutoLogin($oltBaseUrl, $token, $oltUser, $oltPass, $oltLoginKey, '/board?info=pon', $timeout, $proxy);
+
+    $oltSystem = null;
+    if ($sysRes['ok'] || $cpuRes['ok']) {
+        $s = $sysRes['json']['data'] ?? [];
+        $c = $cpuRes['json']['data'] ?? [];
+        $oltSystem = [
+            'vendor'             => $s['vendor'] ?? 'HSGQ',
+            'product_name'       => $s['product_name'] ?? null,
+            'fw_ver'             => $s['fw_ver'] ?? null,
+            'hw_ver'             => $s['hw_ver'] ?? null,
+            'cpu_usage_percent'  => isset($c['cpu_usage']) ? (int)$c['cpu_usage'] : null,
+            'memory_usage_percent' => isset($c['memory_usage']) ? (int)$c['memory_usage'] : null,
+        ];
+    }
+
+    $ponSummary = null;
+    if ($ponRes['ok'] && is_array($ponRes['json']['data'])) {
+        $ports = [];
+        $totalOnline = 0;
+        $totalOffline = 0;
+        foreach ($ponRes['json']['data'] as $p) {
+            $pid = (int)($p['port_id'] ?? 0);
+            $on = (int)($p['online'] ?? 0);
+            $off = (int)($p['offline'] ?? 0);
+            $totalOnline += $on;
+            $totalOffline += $off;
+            $ports[] = [
+                'port_id'      => $pid,
+                'port_name'    => 'PON' . str_pad((string)$pid, 2, '0', STR_PAD_LEFT),
+                'admin_status' => ((int)($p['admin_status'] ?? 0)) === 1 ? 'Enable' : 'Disable',
+                'link_status'  => ((int)($p['status'] ?? 0)) === 1 ? 'UP' : 'DOWN',
+                'online'       => $on,
+                'offline'      => $off,
+                'total_ont'    => $on + $off,
+            ];
+        }
+        $ponSummary = [
+            'total_online'  => $totalOnline,
+            'total_offline' => $totalOffline,
+            'total_ont'     => $totalOnline + $totalOffline,
+            'ports'         => $ports,
+        ];
+    }
+
     return [
         'ok'      => true,
         'enabled' => $portEnabled,
+        'system'  => $oltSystem,
+        'pon_all' => $ponSummary,
         'data'    => [
             'port_id'          => (int)($data['port_id'] ?? $portId),
             'port_name'        => 'PON' . str_pad((string)($data['port_id'] ?? $portId), 2, '0', STR_PAD_LEFT),
@@ -1329,6 +1383,8 @@ if ($routeScope === 'olt') {
             'port_status'    => $olt['data']['status'],
             'overall_health' => $portEnabled ? 'ALL_SYSTEMS_OPERATIONAL' : 'OLT_PORT_DISABLED',
         ],
+        'olt_system'  => $olt['system'] ?? null,
+        'olt_pon_all' => $olt['pon_all'] ?? null,
         'olt_pon'     => $olt['data'],
     ]);
 }
