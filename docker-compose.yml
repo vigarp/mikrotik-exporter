@@ -1,15 +1,11 @@
-version: '3.8'
-
 services:
   mikrotik-api:
     build: .
     container_name: mikrotik_rest_api
     env_file:
       - .env
-    networks:
-      - kuma-net
+    environment:
+      - TZ=Asia/Jakarta
+    ports:
+      - "8081:8080"
     restart: unless-stopped
-
-networks:
-  kuma-net:
-    external: true

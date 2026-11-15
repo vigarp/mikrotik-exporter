@@ -39,6 +39,11 @@ MIKROTIK_TIMEOUT=5
 CLOUDFLARE_RADAR_TOKEN=your_cloudflare_radar_api_token
 ENABLE_EXTERNAL_INTEL=false
 ENABLE_LOG=true
+
+# HSGQ OLT Monitoring
+OLT_BASE_URL=http://10.0.1.2
+OLT_TOKEN=your_olt_x_token
+OLT_PORT_ID=1
 ```
 
 > ⚠️ **Security Warning**: Never commit your `.env` file to Git! Ensure `.env` is listed in your `.gitignore`.
@@ -54,6 +59,7 @@ ENABLE_LOG=true
 - **`/api/usage`** — Live traffic (`kbps`), session data usage, and interface health counters.
 - **`/api/network`** — Public IP, optional IP intelligence (`?enrich=true`), DNS resolver, and ISP gateway status.
 - **`/api/router`** — Router hardware health (CPU, RAM, uptime, board name, RouterOS version).
+- **`/api/olt`** — HSGQ OLT PON port statistic monitor (latest/average/peak/min TX & RX Mbps, error/discard frames, supports `?port_id=`).
 
 ### Base URL:
 - **Docker Production**: `http://localhost:8080/api` or `http://mikrotik_rest_api:8080/api`
@@ -64,6 +70,7 @@ ENABLE_LOG=true
 | :--- | :--- | :--- |
 | `user` | `.env` value | Override the target PPPoE user to monitor. |
 | `enrich` | `false` | Set to `true` (e.g. `?enrich=true`) to fetch ASN, ISP name, and Cloudflare Radar intelligence. |
+| `port_id` | `.env` (`1`) | Override the HSGQ OLT PON port ID for `/api/olt`. |
 
 ---
 

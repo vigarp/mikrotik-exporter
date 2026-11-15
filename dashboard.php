@@ -351,6 +351,10 @@
           <span>Router System</span>
           <span class="tab-endpoint">/router</span>
         </button>
+        <button type="button" role="tab" id="tab-olt" data-tab="olt" aria-selected="false">
+          <span>OLT PON01</span>
+          <span class="tab-endpoint">/olt</span>
+        </button>
       </div>
     </aside>
 
@@ -393,6 +397,13 @@
           <dl class="kv-list" id="sys-list"></dl>
         </article>
       </section>
+
+      <section role="tabpanel" id="panel-olt" aria-labelledby="tab-olt" hidden>
+        <article class="card">
+          <h2>HSGQ OLT PON Traffic</h2>
+          <dl class="kv-list" id="olt-list"></dl>
+        </article>
+      </section>
     </main>
   </div>
 
@@ -403,6 +414,7 @@
       usage: document.getElementById('panel-usage'),
       network: document.getElementById('panel-network'),
       router: document.getElementById('panel-router'),
+      olt: document.getElementById('panel-olt'),
     };
 
     const statusBadge = document.getElementById('status-badge');
@@ -490,6 +502,23 @@
           ['CPU Load', rs ? `${rs.cpu_load_percent}%` : '-'],
           ['Free / Total RAM', rs ? `${rs.free_memory_mb} / ${rs.total_memory_mb} MB` : '-'],
           ['Router Uptime', rs?.uptime || '-'],
+        ]);
+      } else if (tabName === 'olt') {
+        const op = data.olt_pon || {};
+        const latest = op.latest || {};
+        const sum = op.summary || {};
+        renderList('olt-list', [
+          ['Port', op.port_name ? `${op.port_name} (ID ${op.port_id})` : '-'],
+          ['Port Status', op.status || '-'],
+          ['Latest Sample', latest.monitor_time || '-'],
+          ['Latest TX (Download)', latest.tx_mbps !== undefined ? `${latest.tx_mbps} Mbps` : '-'],
+          ['Latest RX (Upload)', latest.rx_mbps !== undefined ? `${latest.rx_mbps} Mbps` : '-'],
+          ['Average (TX / RX)', sum.avg_tx_mbps !== undefined ? `${sum.avg_tx_mbps} / ${sum.avg_rx_mbps} Mbps` : '-'],
+          ['Peak (TX / RX)', sum.peak_tx_mbps !== undefined ? `${sum.peak_tx_mbps} / ${sum.peak_rx_mbps} Mbps` : '-'],
+          ['Min (TX / RX)', sum.min_tx_mbps !== undefined ? `${sum.min_tx_mbps} / ${sum.min_rx_mbps} Mbps` : '-'],
+          ['Monitor Window', op.cur_count ? `${op.cur_count}/${op.max_count} (${op.interval_seconds}s interval, ${sum.valid_samples ?? 0} valid)` : '-'],
+          ['Errors (RX / TX)', sum.rx_error_frames !== undefined ? `${sum.rx_error_frames} / ${sum.tx_error_frames}` : '-'],
+          ['Discards (RX / TX)', sum.rx_discard_frames !== undefined ? `${sum.rx_discard_frames} / ${sum.tx_discard_frames}` : '-'],
         ]);
       }
     }

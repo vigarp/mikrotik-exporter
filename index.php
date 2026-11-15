@@ -19,6 +19,7 @@ $apiRoutes = [
     '/api/usage'      => 'usage',
     '/api/network'    => 'network',
     '/api/router'     => 'router',
+    '/api/olt'        => 'olt',
 ];
 
 if (!isset($apiRoutes[$normalizedPath])) {
@@ -26,7 +27,7 @@ if (!isset($apiRoutes[$normalizedPath])) {
     http_response_code(404);
     echo json_encode([
         'status'  => 'ERROR',
-        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router.'
+        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router, /api/olt.'
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -67,6 +68,9 @@ $timeout     = (int)(getenv('MIKROTIK_TIMEOUT') ?: ($_ENV['MIKROTIK_TIMEOUT'] ??
 $enableLog   = getenv('ENABLE_LOG') !== false
              ? (filter_var(getenv('ENABLE_LOG') ?: ($_ENV['ENABLE_LOG'] ?? true), FILTER_VALIDATE_BOOLEAN))
              : true;
+$oltBaseUrl  = rtrim(trim(getenv('OLT_BASE_URL') ?: ($_ENV['OLT_BASE_URL'] ?? ($_SERVER['OLT_BASE_URL'] ?? ''))), '/');
+$oltToken    = trim(getenv('OLT_TOKEN') ?: ($_ENV['OLT_TOKEN'] ?? ($_SERVER['OLT_TOKEN'] ?? '')));
+$oltPortId   = (int)($_GET['port_id'] ?? (getenv('OLT_PORT_ID') ?: ($_ENV['OLT_PORT_ID'] ?? ($_SERVER['OLT_PORT_ID'] ?? 1))));
 
 header('Content-Type: application/json; charset=utf-8');
 
@@ -467,6 +471,170 @@ function fetchRouterSystem($API) {
         'board_name'       => $resource[0]['board-name'] ?? null,
         'version'          => $resource[0]['version'] ?? null
     ];
+}
+
+function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
+    if ($oltBaseUrl === '' || $oltToken === '') {
+        return [
+            'ok'          => false,
+            'status_code' => 400,
+            'error'       => 'OLT_BASE_URL or OLT_TOKEN is not configured in .env'
+        ];
+    }
+
+    if ($portId <= 0) {
+        return [
+            'ok'          => false,
+            'status_code' => 400,
+            'error'       => 'Invalid OLT port_id'
+        ];
+    }
+
+    $url = "{$oltBaseUrl}/switch_port?form=statistic_monitor&port_id={$portId}";
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_CONNECTTIMEOUT => $timeout,
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_HTTPHEADER     => [
+            'x-token: ' . $oltToken,
+            'Accept: application/json'
+        ],
+    ]);
+    if ($proxy !== '') {
+        curl_setopt($ch, CURLOPT_PROXY, $proxy);
+    }
+
+    $raw = curl_exec($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+
+    if ($raw === false || $httpCode === 0) {
+        return [
+            'ok'          => false,
+            'status_code' => 503,
+            'error'       => 'Unable to reach HSGQ OLT: ' . ($curlErr ?: 'connection failed')
+        ];
+    }
+
+    if ($httpCode === 401 || $httpCode === 403) {
+        return [
+            'ok'          => false,
+            'status_code' => 503,
+            'error'       => "HSGQ OLT rejected token (HTTP {$httpCode}); update OLT_TOKEN in .env"
+        ];
+    }
+
+    $json = json_decode($raw, true);
+    if (!is_array($json)) {
+        return [
+            'ok'          => false,
+            'status_code' => 502,
+            'error'       => "Invalid JSON response from HSGQ OLT (HTTP {$httpCode})"
+        ];
+    }
+
+    if (($json['code'] ?? null) !== 1 || !isset($json['data']) || !is_array($json['data'])) {
+        $msg = $json['message'] ?? 'unknown error';
+        return [
+            'ok'          => false,
+            'status_code' => 503,
+            'error'       => "HSGQ OLT error (code=" . ($json['code'] ?? 'null') . "): {$msg} (token may have expired)"
+        ];
+    }
+
+    $data = $json['data'];
+    $times = $data['monitor_time'] ?? [];
+    $intervals = $data['interval_time'] ?? [];
+    $rxOctets = $data['rx_octets'] ?? [];
+    $txOctets = $data['tx_octets'] ?? [];
+
+    $rxRates = [];
+    $txRates = [];
+    $count = min(count($rxOctets), count($txOctets), count($intervals));
+    for ($i = 0; $i < $count; $i++) {
+        $iv = (int)$intervals[$i];
+        $rx = (float)$rxOctets[$i];
+        $tx = (float)$txOctets[$i];
+        if ($iv <= 0 || ($rx === 0.0 && $tx === 0.0)) {
+            continue;
+        }
+        $rxRates[] = ($rx * 8) / ($iv * 1000000);
+        $txRates[] = ($tx * 8) / ($iv * 1000000);
+    }
+
+    $latestInterval = (int)($intervals[0] ?? ($data['interval'] ?? 60));
+    $latestRx = (float)($rxOctets[0] ?? 0);
+    $latestTx = (float)($txOctets[0] ?? 0);
+    $latestRxMbps = $latestInterval > 0 ? round(($latestRx * 8) / ($latestInterval * 1000000), 2) : 0.0;
+    $latestTxMbps = $latestInterval > 0 ? round(($latestTx * 8) / ($latestInterval * 1000000), 2) : 0.0;
+
+    $sampleCount = count($rxRates);
+    $portEnabled = ((int)($data['status'] ?? 0)) === 1;
+
+    return [
+        'ok'      => true,
+        'enabled' => $portEnabled,
+        'data'    => [
+            'port_id'          => (int)($data['port_id'] ?? $portId),
+            'port_name'        => 'PON' . str_pad((string)($data['port_id'] ?? $portId), 2, '0', STR_PAD_LEFT),
+            'status'           => $portEnabled ? 'Enable' : 'Disable',
+            'interval_seconds' => (int)($data['interval'] ?? 60),
+            'max_count'        => (int)($data['max_count'] ?? 0),
+            'cur_count'        => (int)($data['cur_count'] ?? 0),
+            'latest'           => [
+                'monitor_time'     => isset($times[0]) ? str_replace('\\/', '/', (string)$times[0]) : null,
+                'interval_seconds' => $latestInterval,
+                'rx_mbps'          => $latestRxMbps,
+                'tx_mbps'          => $latestTxMbps,
+                'rx_octets'        => (int)$latestRx,
+                'tx_octets'        => (int)$latestTx,
+            ],
+            'summary'          => [
+                'valid_samples'     => $sampleCount,
+                'avg_rx_mbps'       => $sampleCount > 0 ? round(array_sum($rxRates) / $sampleCount, 2) : 0.0,
+                'avg_tx_mbps'       => $sampleCount > 0 ? round(array_sum($txRates) / $sampleCount, 2) : 0.0,
+                'peak_rx_mbps'      => $sampleCount > 0 ? round(max($rxRates), 2) : 0.0,
+                'peak_tx_mbps'      => $sampleCount > 0 ? round(max($txRates), 2) : 0.0,
+                'min_rx_mbps'       => $sampleCount > 0 ? round(min($rxRates), 2) : 0.0,
+                'min_tx_mbps'       => $sampleCount > 0 ? round(min($txRates), 2) : 0.0,
+                'rx_error_frames'   => (int)array_sum($data['rx_error_frame'] ?? []),
+                'tx_error_frames'   => (int)array_sum($data['tx_error_frame'] ?? []),
+                'rx_discard_frames' => (int)array_sum($data['rx_discard_frame'] ?? []),
+                'tx_discard_frames' => (int)array_sum($data['tx_discard_frame'] ?? []),
+            ]
+        ]
+    ];
+}
+
+if ($routeScope === 'olt') {
+    $olt = fetchOltPonStats($oltBaseUrl, $oltToken, $oltPortId, $timeout, $proxy);
+    if (!$olt['ok']) {
+        respond($olt['status_code'], [
+            'status'      => 'DOWN',
+            'online'      => false,
+            'timestamp'   => date('c'),
+            'diagnostics' => [
+                'olt_reachable'  => false,
+                'overall_health' => 'OLT_UNREACHABLE_OR_AUTH_FAILED',
+            ],
+            'message'     => $olt['error'],
+        ]);
+    }
+
+    $portEnabled = $olt['enabled'];
+    respond($portEnabled ? 200 : 503, [
+        'status'      => $portEnabled ? 'UP' : 'DOWN',
+        'online'      => $portEnabled,
+        'timestamp'   => date('c'),
+        'diagnostics' => [
+            'olt_reachable'  => true,
+            'port_status'    => $olt['data']['status'],
+            'overall_health' => $portEnabled ? 'ALL_SYSTEMS_OPERATIONAL' : 'OLT_PORT_DISABLED',
+        ],
+        'olt_pon'     => $olt['data'],
+    ]);
 }
 
 if (in_array($routeScope, ['all', 'connection', 'usage'], true) && $pppoeUser === '') {
