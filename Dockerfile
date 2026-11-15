@@ -5,6 +5,7 @@ WORKDIR /var/www/html
 
 # Copy application files
 COPY routeros_api.class.php .
+COPY dashboard.php .
 COPY index.php .
 
 # Expose HTTP port

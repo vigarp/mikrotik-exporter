@@ -3,6 +3,27 @@
  * MikroTik PPPoE & Infrastructure Healthcheck Exporter for Uptime Kuma
  */
 
+$requestPath = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$normalizedPath = rtrim($requestPath, '/') ?: '/';
+
+// Serve lightweight Web UI on "/" (and "/index.php")
+if ($normalizedPath === '/' || $normalizedPath === '/index.php') {
+    header('Content-Type: text/html; charset=utf-8');
+    require __DIR__ . '/dashboard.php';
+    exit;
+}
+
+// Serve JSON healthcheck API only on "/api"
+if ($normalizedPath !== '/api') {
+    header('Content-Type: application/json; charset=utf-8');
+    http_response_code(404);
+    echo json_encode([
+        'status'  => 'ERROR',
+        'message' => 'Not Found. Use / for Web UI or /api for JSON healthcheck.'
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 require_once(__DIR__ . '/routeros_api.class.php');
 
 // Load .env file if running locally outside Docker

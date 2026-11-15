@@ -47,9 +47,13 @@ ENABLE_LOG=true
 
 ## 📡 API Usage & Query Parameters
 
+### Endpoints:
+- **`/`** — Lightweight Web UI displaying live status, PPPoE session, data usage, ISP gateway, and router health.
+- **`/api`** — JSON healthcheck endpoint for Uptime Kuma and `curl` (supports `?user=...` and `?enrich=true`).
+
 ### Base URL:
-- **Docker Production**: `http://localhost:8080/` or `http://mikrotik_rest_api:8080/`
-- **Apache Local**: `http://localhost/mikrotik-exporter/`
+- **Docker Production**: `http://localhost:8080/api` or `http://mikrotik_rest_api:8080/api`
+- **Apache Local**: `http://localhost/mikrotik-exporter/api`
 
 ### Query Parameters:
 | Parameter | Default | Description |
@@ -171,7 +175,7 @@ ENABLE_LOG=true
    ```
 4. Test the healthcheck endpoint:
    ```bash
-   curl http://localhost:8080/
+   curl http://localhost:8080/api
    ```
 
 ---
@@ -183,7 +187,7 @@ ENABLE_LOG=true
 3. Configure the fields:
    - **Monitor Type**: `HTTP(s)`
    - **Friendly Name**: `Home Internet (PPPoE)`
-   - **URL**: `http://mikrotik_rest_api:8080/` *(if on same Docker network)* or `http://<YOUR_VPS_IP>:8080/`
+   - **URL**: `http://mikrotik_rest_api:8080/api` *(if on same Docker network)* or `http://<YOUR_VPS_IP>:8080/api`
    - **Accepted Status Codes**: `200`
    - **Heartbeat Interval**: `180` seconds (3 minutes)
 4. *(Optional Advanced Monitor)*:
