@@ -21,6 +21,7 @@ $apiRoutes = [
     '/api/router'     => 'router',
     '/api/olt'        => 'olt',
     '/api/platforms'  => 'platforms',
+    '/api/insights'   => 'insights',
 ];
 
 if (!isset($apiRoutes[$normalizedPath])) {
@@ -28,7 +29,7 @@ if (!isset($apiRoutes[$normalizedPath])) {
     http_response_code(404);
     echo json_encode([
         'status'  => 'ERROR',
-        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router, /api/olt, /api/platforms.'
+        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router, /api/olt, /api/platforms, /api/insights.'
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -867,8 +868,21 @@ function fetchGlobalPlatforms($API) {
     $topPlatforms = [];
     foreach (array_slice($platforms, 0, 20) as $p) {
         $p['connection_share_percent'] = $publicConnections > 0 ? round(($p['connections'] / $publicConnections) * 100, 1) : 0.0;
+        $p['byte_share_percent'] = $totalActiveBytes > 0 ? round(($p['total_bytes'] / $totalActiveBytes) * 100, 1) : 0.0;
         $p['total_human'] = formatBytes($p['total_bytes']);
         $topPlatforms[] = $p;
+    }
+
+    $platformsByBytes = $platforms;
+    uasort($platformsByBytes, function ($a, $b) {
+        return $b['total_bytes'] <=> $a['total_bytes'];
+    });
+    $topPlatformsByBytes = [];
+    foreach (array_slice($platformsByBytes, 0, 20) as $p) {
+        $p['connection_share_percent'] = $publicConnections > 0 ? round(($p['connections'] / $publicConnections) * 100, 1) : 0.0;
+        $p['byte_share_percent'] = $totalActiveBytes > 0 ? round(($p['total_bytes'] / $totalActiveBytes) * 100, 1) : 0.0;
+        $p['total_human'] = formatBytes($p['total_bytes']);
+        $topPlatformsByBytes[] = $p;
     }
 
     return [
@@ -883,7 +897,304 @@ function fetchGlobalPlatforms($API) {
             'total_active_traffic_bytes' => $totalActiveBytes,
             'total_active_traffic_human' => formatBytes($totalActiveBytes),
         ],
-        'top_platforms' => $topPlatforms,
+        'top_platforms'          => $topPlatforms,
+        'top_platforms_by_bytes' => $topPlatformsByBytes,
+    ];
+}
+
+function parseRouterOsUptimeSec($uptimeStr) {
+    if (!$uptimeStr || !is_string($uptimeStr)) return PHP_INT_MAX;
+    $sec = 0;
+    if (preg_match('/(\d+)w/', $uptimeStr, $m)) $sec += (int)$m[1] * 604800;
+    if (preg_match('/(\d+)d/', $uptimeStr, $m)) $sec += (int)$m[1] * 86400;
+    if (preg_match('/(\d+)h/', $uptimeStr, $m)) $sec += (int)$m[1] * 3600;
+    if (preg_match('/(\d+)m/', $uptimeStr, $m)) $sec += (int)$m[1] * 60;
+    if (preg_match('/(\d+)s/', $uptimeStr, $m)) $sec += (int)$m[1];
+    return $sec;
+}
+
+function fetchInsightsFleet($API) {
+    $secrets = rosGet($API, '/ppp/secret', [
+        '.proplist' => 'name,profile,disabled,last-logged-out,last-disconnect-reason'
+    ]);
+    $actives = rosGet($API, '/ppp/active', [
+        '.proplist' => 'name,address,uptime,caller-id'
+    ]);
+
+    $activeMap = [];
+    $shortestUptimes = [];
+    if (is_array($actives)) {
+        foreach ($actives as $a) {
+            $name = $a['name'] ?? '';
+            if ($name === '') continue;
+            $activeMap[$name] = $a;
+            $shortestUptimes[] = [
+                'user'       => $name,
+                'ip_address' => $a['address'] ?? null,
+                'uptime'     => $a['uptime'] ?? '-',
+                'uptime_sec' => parseRouterOsUptimeSec($a['uptime'] ?? ''),
+            ];
+        }
+    }
+
+    usort($shortestUptimes, function ($a, $b) {
+        return $a['uptime_sec'] <=> $b['uptime_sec'];
+    });
+    $shortestUptimes = array_slice($shortestUptimes, 0, 10);
+
+    $totalSecrets = is_array($secrets) ? count($secrets) : 0;
+    $disabledCount = 0;
+    $offlineUsers = [];
+    $reasons = [];
+
+    if (is_array($secrets)) {
+        foreach ($secrets as $s) {
+            $name = $s['name'] ?? '';
+            if ($name === '') continue;
+            $isDisabled = ($s['disabled'] ?? 'false') === 'true';
+            if ($isDisabled) {
+                $disabledCount++;
+                continue;
+            }
+            if (!isset($activeMap[$name])) {
+                $reason = $s['last-disconnect-reason'] ?? 'unknown';
+                $reasons[$reason] = ($reasons[$reason] ?? 0) + 1;
+                $offlineUsers[] = [
+                    'user'                   => $name,
+                    'profile'                => $s['profile'] ?? '-',
+                    'last_logged_out'        => $s['last-logged-out'] ?? '-',
+                    'last_disconnect_reason' => $reason,
+                ];
+            }
+        }
+    }
+
+    usort($offlineUsers, function ($a, $b) {
+        return strcmp($b['last_logged_out'], $a['last_logged_out']);
+    });
+    arsort($reasons);
+
+    $enabledCount = $totalSecrets - $disabledCount;
+    $onlineCount = count($activeMap);
+    $offlineCount = count($offlineUsers);
+
+    return [
+        'summary' => [
+            'total_secrets'      => $totalSecrets,
+            'enabled_secrets'    => $enabledCount,
+            'disabled_secrets'   => $disabledCount,
+            'online_count'       => $onlineCount,
+            'offline_count'      => $offlineCount,
+            'online_percent'     => $enabledCount > 0 ? round(($onlineCount / $enabledCount) * 100, 1) : 0.0,
+            'disconnect_reasons' => $reasons,
+        ],
+        'recent_offline'   => array_slice($offlineUsers, 0, 20),
+        'shortest_uptimes' => $shortestUptimes,
+    ];
+}
+
+function fetchInsightsTopUsers($API) {
+    $actives = rosGet($API, '/ppp/active', [
+        '.proplist' => 'name,address,uptime'
+    ]);
+    $ifaces = rosGet($API, '/interface', [
+        'type'      => 'pppoe-in',
+        '.proplist' => 'name,rx-byte,tx-byte,running'
+    ]);
+    $connections = rosGet($API, '/ip/firewall/connection', [
+        '.proplist' => 'src-address,orig-bytes,repl-bytes'
+    ]);
+
+    $ipToUser = [];
+    $userMeta = [];
+    if (is_array($actives)) {
+        foreach ($actives as $a) {
+            $name = $a['name'] ?? '';
+            $ip = $a['address'] ?? '';
+            if ($name !== '') {
+                $userMeta[$name] = [
+                    'ip_address' => $ip,
+                    'uptime'     => $a['uptime'] ?? '-',
+                ];
+            }
+            if ($ip !== '' && $name !== '') {
+                $ipToUser[$ip] = $name;
+            }
+        }
+    }
+
+    $bySessionBytes = [];
+    if (is_array($ifaces)) {
+        foreach ($ifaces as $ifc) {
+            $ifaceName = $ifc['name'] ?? '';
+            $user = $ifaceName;
+            if (preg_match('/^<pppoe-(.+)>$/', $ifaceName, $m)) {
+                $user = $m[1];
+            }
+            $rx = (int)($ifc['rx-byte'] ?? 0);
+            $tx = (int)($ifc['tx-byte'] ?? 0);
+            $total = $rx + $tx;
+            $bySessionBytes[] = [
+                'user'           => $user,
+                'ip_address'     => $userMeta[$user]['ip_address'] ?? null,
+                'uptime'         => $userMeta[$user]['uptime'] ?? '-',
+                'download_bytes' => $tx,
+                'upload_bytes'   => $rx,
+                'total_bytes'    => $total,
+                'download_human' => formatBytes($tx),
+                'upload_human'   => formatBytes($rx),
+                'total_human'    => formatBytes($total),
+            ];
+        }
+    }
+    usort($bySessionBytes, function ($a, $b) {
+        return $b['total_bytes'] <=> $a['total_bytes'];
+    });
+
+    $connByIp = [];
+    if (is_array($connections)) {
+        foreach ($connections as $c) {
+            $rawSrc = (string)($c['src-address'] ?? '');
+            $ip = explode(':', $rawSrc)[0];
+            if ($ip === '') continue;
+            if (!isset($connByIp[$ip])) {
+                $connByIp[$ip] = [
+                    'ip_address'   => $ip,
+                    'user'         => $ipToUser[$ip] ?? null,
+                    'connections'  => 0,
+                    'active_bytes' => 0,
+                ];
+            }
+            $connByIp[$ip]['connections']++;
+            $connByIp[$ip]['active_bytes'] += (int)($c['orig-bytes'] ?? 0) + (int)($c['repl-bytes'] ?? 0);
+        }
+    }
+    uasort($connByIp, function ($a, $b) {
+        return $b['connections'] <=> $a['connections'];
+    });
+    $topConnections = [];
+    foreach (array_slice($connByIp, 0, 15) as $row) {
+        $row['active_traffic_human'] = formatBytes($row['active_bytes']);
+        $topConnections[] = $row;
+    }
+
+    return [
+        'top_by_session_bytes' => array_slice($bySessionBytes, 0, 15),
+        'top_by_connections'   => $topConnections,
+    ];
+}
+
+function fetchInsightsPorts($API) {
+    $health = rosGet($API, '/system/health');
+    $ifaces = rosGet($API, '/interface', [
+        '.proplist' => 'name,type,running,disabled,rx-byte,tx-byte,rx-drop,tx-drop,rx-error,tx-error,link-downs'
+    ]);
+    $sfpRaw = $API->post('/interface/ethernet/monitor', [
+        'numbers' => 'sfp-sfpplus1',
+        'once'    => ''
+    ]);
+
+    $healthItems = [];
+    if (is_array($health)) {
+        foreach ($health as $h) {
+            $healthItems[] = [
+                'name'  => $h['name'] ?? '-',
+                'value' => $h['value'] ?? '-',
+                'unit'  => $h['type'] ?? '',
+            ];
+        }
+    }
+
+    $sfpInfo = null;
+    if (is_array($sfpRaw) && !empty($sfpRaw[0])) {
+        $s = $sfpRaw[0];
+        $sfpInfo = [
+            'name'           => $s['name'] ?? 'sfp-sfpplus1',
+            'status'         => $s['status'] ?? '-',
+            'rate'           => $s['rate'] ?? '-',
+            'rx_power_dbm'   => isset($s['sfp-rx-power']) ? (float)$s['sfp-rx-power'] : null,
+            'tx_power_dbm'   => isset($s['sfp-tx-power']) ? (float)$s['sfp-tx-power'] : null,
+            'temperature_c'  => isset($s['sfp-temperature']) ? (int)$s['sfp-temperature'] : null,
+            'voltage_v'      => isset($s['sfp-supply-voltage']) ? (float)$s['sfp-supply-voltage'] : null,
+            'wavelength_nm'  => $s['sfp-wavelength'] ?? null,
+            'rx_loss'        => ($s['sfp-rx-loss'] ?? 'false') === 'true',
+            'tx_fault'       => ($s['sfp-tx-fault'] ?? 'false') === 'true',
+        ];
+    }
+
+    $physicalPorts = [];
+    if (is_array($ifaces)) {
+        foreach ($ifaces as $ifc) {
+            $type = $ifc['type'] ?? '';
+            if (!in_array($type, ['ether', 'sfp'], true)) {
+                continue;
+            }
+            $rx = (int)($ifc['rx-byte'] ?? 0);
+            $tx = (int)($ifc['tx-byte'] ?? 0);
+            $physicalPorts[] = [
+                'name'       => $ifc['name'] ?? '-',
+                'running'    => ($ifc['running'] ?? 'false') === 'true',
+                'disabled'   => ($ifc['disabled'] ?? 'false') === 'true',
+                'rx_human'   => formatBytes($rx),
+                'tx_human'   => formatBytes($tx),
+                'rx_drop'    => (int)($ifc['rx-drop'] ?? 0),
+                'tx_drop'    => (int)($ifc['tx-drop'] ?? 0),
+                'rx_error'   => (int)($ifc['rx-error'] ?? 0),
+                'tx_error'   => (int)($ifc['tx-error'] ?? 0),
+                'link_downs' => (int)($ifc['link-downs'] ?? 0),
+            ];
+        }
+    }
+
+    return [
+        'health'         => $healthItems,
+        'sfp'            => $sfpInfo,
+        'physical_ports' => $physicalPorts,
+    ];
+}
+
+function fetchInsightsRouting($API) {
+    $routes = rosGet($API, '/ip/route', [
+        'dst-address' => '0.0.0.0/0',
+        '.proplist'   => 'dst-address,gateway,immediate-gw,distance,active,disabled,comment,routing-table'
+    ]);
+    $pools = rosGet($API, '/ip/pool');
+
+    $defaultRoutes = [];
+    if (is_array($routes)) {
+        foreach ($routes as $r) {
+            $defaultRoutes[] = [
+                'dst_address'   => $r['dst-address'] ?? '0.0.0.0/0',
+                'gateway'       => $r['gateway'] ?? '-',
+                'immediate_gw'  => $r['immediate-gw'] ?? '-',
+                'distance'      => (int)($r['distance'] ?? 0),
+                'active'        => ($r['active'] ?? 'false') === 'true',
+                'disabled'      => ($r['disabled'] ?? 'false') === 'true',
+                'routing_table' => $r['routing-table'] ?? 'main',
+                'comment'       => $r['comment'] ?? null,
+            ];
+        }
+    }
+
+    $ipPools = [];
+    if (is_array($pools)) {
+        foreach ($pools as $p) {
+            $total = (int)($p['total'] ?? 0);
+            $used = (int)($p['used'] ?? 0);
+            $ipPools[] = [
+                'name'         => $p['name'] ?? '-',
+                'ranges'       => $p['ranges'] ?? '-',
+                'used'         => $used,
+                'available'    => (int)($p['available'] ?? 0),
+                'total'        => $total,
+                'used_percent' => $total > 0 ? round(($used / $total) * 100, 1) : 0.0,
+            ];
+        }
+    }
+
+    return [
+        'default_routes' => $defaultRoutes,
+        'ip_pools'       => $ipPools,
     ];
 }
 
@@ -925,12 +1236,54 @@ if (in_array($routeScope, ['all', 'connection', 'usage'], true) && $pppoeUser ==
     ]);
 }
 
-$clientTimeout = ($routeScope === 'platforms') ? max($timeout, 15) : $timeout;
+$insightSection = trim($_GET['section'] ?? 'fleet');
+$clientTimeout = ($routeScope === 'platforms' || ($routeScope === 'insights' && in_array($insightSection, ['top_users', 'all'], true)))
+    ? max($timeout, 15)
+    : $timeout;
 $API = new RouterosRestClient($restUrl, $username, $password, $clientTimeout, $proxy);
 $connected = $API->connect();
 
 if ($connected) {
     try {
+        if ($routeScope === 'insights') {
+            $validSections = ['fleet', 'top_users', 'ports', 'routing', 'all'];
+            if (!in_array($insightSection, $validSections, true)) {
+                $API->disconnect();
+                respond(400, [
+                    'status'  => 'ERROR',
+                    'online'  => false,
+                    'message' => 'Invalid ?section=. Use fleet, top_users, ports, routing, or all.'
+                ]);
+            }
+
+            $insights = [];
+            if ($insightSection === 'fleet' || $insightSection === 'all') {
+                $insights['fleet'] = fetchInsightsFleet($API);
+            }
+            if ($insightSection === 'top_users' || $insightSection === 'all') {
+                $insights['top_users'] = fetchInsightsTopUsers($API);
+            }
+            if ($insightSection === 'ports' || $insightSection === 'all') {
+                $insights['ports'] = fetchInsightsPorts($API);
+            }
+            if ($insightSection === 'routing' || $insightSection === 'all') {
+                $insights['routing'] = fetchInsightsRouting($API);
+            }
+            $API->disconnect();
+
+            respond(200, [
+                'status'      => 'UP',
+                'online'      => true,
+                'section'     => $insightSection,
+                'timestamp'   => date('c'),
+                'diagnostics' => [
+                    'router_connected' => true,
+                    'overall_health'   => 'ALL_SYSTEMS_OPERATIONAL',
+                ],
+                'insights'    => $insights,
+            ]);
+        }
+
         if ($routeScope === 'platforms') {
             $platformStats = fetchGlobalPlatforms($API);
             $API->disconnect();

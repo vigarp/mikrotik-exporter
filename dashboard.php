@@ -128,7 +128,7 @@
       gap: 0.25rem;
     }
 
-    [role="tab"] {
+    .tablist > [role="tab"] {
       position: relative;
       display: flex;
       justify-content: space-between;
@@ -146,16 +146,16 @@
       cursor: pointer;
     }
 
-    [role="tab"]:hover {
+    .tablist > [role="tab"]:hover {
       background: var(--hover);
     }
 
-    [role="tab"][aria-selected="true"] {
+    .tablist > [role="tab"][aria-selected="true"] {
       color: var(--accent);
       background: var(--hover);
     }
 
-    [role="tab"][aria-selected="true"]::after {
+    .tablist > [role="tab"][aria-selected="true"]::after {
       content: "";
       position: absolute;
       inset-block: 0.35rem;
@@ -214,6 +214,41 @@
     .badge.up { background: var(--ok-bg); color: var(--ok-fg); }
     .badge.down { background: var(--down-bg); color: var(--down-fg); }
     .badge.warn { background: var(--warn-bg); color: var(--warn-fg); }
+
+    .subtabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+      margin-bottom: 1rem;
+    }
+
+    .subtab {
+      font: inherit;
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 0.42rem 0.85rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--muted);
+      cursor: pointer;
+    }
+
+    .subtab[aria-selected="true"] {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .stack {
+      display: grid;
+      gap: 1rem;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
 
     .btn, a.btn-link {
       font: inherit;
@@ -359,6 +394,10 @@
           <span>Top Platforms</span>
           <span class="tab-endpoint">/platforms</span>
         </button>
+        <button type="button" role="tab" id="tab-insights" data-tab="insights" aria-selected="false">
+          <span>RB5009 Insights</span>
+          <span class="tab-endpoint">/insights</span>
+        </button>
       </div>
     </aside>
 
@@ -410,20 +449,83 @@
       </section>
 
       <section role="tabpanel" id="panel-platforms" aria-labelledby="tab-platforms" hidden>
-        <article class="card">
-          <h2>Global Top Platforms (Active Snapshot)</h2>
-          <dl class="kv-list" id="platforms-summary-list"></dl>
-        </article>
-        <article class="card" style="margin-top: 1rem;">
-          <h2>Top Platforms by Active Connections</h2>
-          <dl class="kv-list" id="platforms-list"></dl>
-        </article>
+        <div class="stack">
+          <article class="card">
+            <h2>Global Top Platforms (Active Snapshot)</h2>
+            <dl class="kv-list" id="platforms-summary-list"></dl>
+          </article>
+          <article class="card">
+            <div class="subtabs" role="tablist" aria-label="Platform Sort Mode">
+              <button type="button" class="subtab" role="tab" data-platform-mode="connections" aria-selected="true">By Connections</button>
+              <button type="button" class="subtab" role="tab" data-platform-mode="bytes" aria-selected="false">By Active Bytes</button>
+            </div>
+            <h2 id="platforms-list-title">Top Platforms by Active Connections</h2>
+            <dl class="kv-list" id="platforms-list"></dl>
+          </article>
+        </div>
+      </section>
+
+      <section role="tabpanel" id="panel-insights" aria-labelledby="tab-insights" hidden>
+        <div class="subtabs" role="tablist" aria-label="RB5009 Insight Sections">
+          <button type="button" class="subtab" role="tab" data-insight-section="fleet" aria-selected="true">Fleet &amp; Churn</button>
+          <button type="button" class="subtab" role="tab" data-insight-section="top_users" aria-selected="false">Top Users &amp; Anomaly</button>
+          <button type="button" class="subtab" role="tab" data-insight-section="ports" aria-selected="false">Ports &amp; SFP</button>
+          <button type="button" class="subtab" role="tab" data-insight-section="routing" aria-selected="false">Routing &amp; Pools</button>
+        </div>
+
+        <div class="stack" data-insight-panel="fleet">
+          <article class="card">
+            <h2>PPPoE Fleet Summary</h2>
+            <dl class="kv-list" id="ins-fleet-summary"></dl>
+          </article>
+          <article class="card">
+            <h2>Recent Offline Users</h2>
+            <dl class="kv-list" id="ins-fleet-offline"></dl>
+          </article>
+          <article class="card">
+            <h2>Shortest Active Uptimes (Potential Flapping)</h2>
+            <dl class="kv-list" id="ins-fleet-uptimes"></dl>
+          </article>
+        </div>
+
+        <div class="stack" data-insight-panel="top_users" hidden>
+          <article class="card">
+            <h2>Top PPPoE Users by Session Traffic</h2>
+            <dl class="kv-list" id="ins-users-bytes"></dl>
+          </article>
+          <article class="card">
+            <h2>Top IPs / Users by Active Connections</h2>
+            <dl class="kv-list" id="ins-users-conns"></dl>
+          </article>
+        </div>
+
+        <div class="stack" data-insight-panel="ports" hidden>
+          <article class="card">
+            <h2>System Health &amp; SFP Optical Diagnostics</h2>
+            <dl class="kv-list" id="ins-ports-health"></dl>
+          </article>
+          <article class="card">
+            <h2>Physical Interfaces (Drops &amp; Errors)</h2>
+            <dl class="kv-list" id="ins-ports-list"></dl>
+          </article>
+        </div>
+
+        <div class="stack" data-insight-panel="routing" hidden>
+          <article class="card">
+            <h2>Default Gateways (0.0.0.0/0)</h2>
+            <dl class="kv-list" id="ins-routing-gw"></dl>
+          </article>
+          <article class="card">
+            <h2>IP Pool Utilization</h2>
+            <dl class="kv-list" id="ins-routing-pools"></dl>
+          </article>
+        </div>
       </section>
     </main>
   </div>
 
   <script>
-    const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+    const tabs = Array.from(document.querySelectorAll('.tablist > [role="tab"]'));
     const panels = {
       connection: document.getElementById('panel-connection'),
       usage: document.getElementById('panel-usage'),
@@ -431,7 +533,14 @@
       router: document.getElementById('panel-router'),
       olt: document.getElementById('panel-olt'),
       platforms: document.getElementById('panel-platforms'),
+      insights: document.getElementById('panel-insights'),
     };
+    const platformSubtabs = Array.from(document.querySelectorAll('[data-platform-mode]'));
+    const insightSubtabs = Array.from(document.querySelectorAll('[data-insight-section]'));
+    const insightPanels = Array.from(document.querySelectorAll('[data-insight-panel]'));
+    let activePlatformMode = 'connections';
+    let activeInsightSection = 'fleet';
+    let lastPlatformData = null;
 
     const statusBadge = document.getElementById('status-badge');
     const metaLine = document.getElementById('meta-line');
@@ -537,13 +646,22 @@
           ['Discards (RX / TX)', sum.rx_discard_frames !== undefined ? `${sum.rx_discard_frames} / ${sum.tx_discard_frames}` : '-'],
         ]);
       } else if (tabName === 'platforms') {
+        lastPlatformData = data;
         const pl = data.platforms || {};
         const sum = pl.summary || {};
-        const rows = (pl.top_platforms || []).map((item, idx) => {
+        const listData = activePlatformMode === 'bytes'
+          ? (pl.top_platforms_by_bytes || pl.top_platforms || [])
+          : (pl.top_platforms || []);
+        document.getElementById('platforms-list-title').textContent = activePlatformMode === 'bytes'
+          ? 'Top Platforms by Active Bytes'
+          : 'Top Platforms by Active Connections';
+        const rows = listData.map((item, idx) => {
           const doms = item.sample_domains?.length ? ` · ${item.sample_domains.join(', ')}` : '';
           return [
             `#${idx + 1} ${item.platform} (${item.asn})`,
-            `${item.connections} conn (${item.connection_share_percent}%) · ${item.total_human}${doms}`
+            activePlatformMode === 'bytes'
+              ? `${item.total_human} (${item.byte_share_percent ?? 0}%) · ${item.connections} conn${doms}`
+              : `${item.connections} conn (${item.connection_share_percent}%) · ${item.total_human}${doms}`
           ];
         });
         renderList('platforms-summary-list', [
@@ -554,11 +672,84 @@
           ['Total Active Traffic', sum.total_active_traffic_human || '-'],
         ]);
         renderList('platforms-list', rows.length ? rows : [['Status', 'No active platform data']]);
+      } else if (tabName === 'insights') {
+        const ins = data.insights || {};
+        if (ins.fleet) {
+          const fl = ins.fleet;
+          const sum = fl.summary || {};
+          const reasons = Object.entries(sum.disconnect_reasons || {}).map(([k, v]) => `${k}: ${v}`).join(', ') || '-';
+          renderList('ins-fleet-summary', [
+            ['Total PPPoE Secrets', sum.total_secrets ?? '-'],
+            ['Enabled / Disabled', sum.enabled_secrets !== undefined ? `${sum.enabled_secrets} / ${sum.disabled_secrets}` : '-'],
+            ['Online / Offline', sum.online_count !== undefined ? `${sum.online_count} (${sum.online_percent}%) / ${sum.offline_count}` : '-'],
+            ['Offline Disconnect Reasons', reasons],
+          ]);
+          const offRows = (fl.recent_offline || []).map((u) => [
+            `${u.user} (${u.profile})`,
+            `${u.last_logged_out} · ${u.last_disconnect_reason}`
+          ]);
+          renderList('ins-fleet-offline', offRows.length ? offRows : [['Status', 'Semua secret enabled sedang online']]);
+          const upRows = (fl.shortest_uptimes || []).map((u, i) => [
+            `#${i + 1} ${u.user}`,
+            `${u.uptime} (${u.ip_address || '-'})`
+          ]);
+          renderList('ins-fleet-uptimes', upRows.length ? upRows : [['Status', 'No active users']]);
+        }
+        if (ins.top_users) {
+          const tu = ins.top_users;
+          const byteRows = (tu.top_by_session_bytes || []).map((u, i) => [
+            `#${i + 1} ${u.user}`,
+            `${u.total_human} (DL ${u.download_human} / UL ${u.upload_human}) · ${u.uptime}`
+          ]);
+          renderList('ins-users-bytes', byteRows.length ? byteRows : [['Status', 'No PPPoE interface counters']]);
+          const connRows = (tu.top_by_connections || []).map((u, i) => [
+            `#${i + 1} ${u.user || u.ip_address}`,
+            `${u.connections} conn · ${u.active_traffic_human} (${u.ip_address})`
+          ]);
+          renderList('ins-users-conns', connRows.length ? connRows : [['Status', 'No active connections']]);
+        }
+        if (ins.ports) {
+          const pt = ins.ports;
+          const healthRows = (pt.health || []).map((h) => [h.name, `${h.value}${h.unit ? ' ' + h.unit : ''}`]);
+          if (pt.sfp) {
+            const s = pt.sfp;
+            healthRows.push(
+              [`${s.name} Link`, `${s.status} (${s.rate})`],
+              [`${s.name} Optical (RX / TX)`, `${s.rx_power_dbm ?? '-'} dBm / ${s.tx_power_dbm ?? '-'} dBm`],
+              [`${s.name} Temp / Voltage`, `${s.temperature_c ?? '-'} C / ${s.voltage_v ?? '-'} V (${s.wavelength_nm ?? '-'} nm)`]
+            );
+          }
+          renderList('ins-ports-health', healthRows.length ? healthRows : [['Status', 'No health data']]);
+          const portRows = (pt.physical_ports || []).map((p) => [
+            `${p.name} (${p.disabled ? 'Disabled' : (p.running ? 'UP' : 'DOWN')})`,
+            `RX ${p.rx_human} / TX ${p.tx_human} · Drop ${p.rx_drop}/${p.tx_drop} · Err ${p.rx_error}/${p.tx_error} · Flaps ${p.link_downs}x`
+          ]);
+          renderList('ins-ports-list', portRows.length ? portRows : [['Status', 'No physical ports']]);
+        }
+        if (ins.routing) {
+          const rt = ins.routing;
+          const gwRows = (rt.default_routes || []).map((r, i) => [
+            `#${i + 1} ${r.comment || r.gateway} (dist ${r.distance})`,
+            `${r.disabled ? 'DISABLED' : (r.active ? 'ACTIVE' : 'BACKUP')} · ${r.immediate_gw} [${r.routing_table}]`
+          ]);
+          renderList('ins-routing-gw', gwRows.length ? gwRows : [['Status', 'No default routes']]);
+          const poolRows = (rt.ip_pools || []).map((p) => [
+            `${p.name} (${p.ranges})`,
+            `${p.used}/${p.total} used (${p.used_percent}%) · ${p.available} free`
+          ]);
+          renderList('ins-routing-pools', poolRows.length ? poolRows : [['Status', 'No IP pools']]);
+        }
       }
     }
 
     async function loadTab(tabName) {
-      const endpoint = `/api/${tabName}${window.location.search}`;
+      let query = window.location.search;
+      if (tabName === 'insights') {
+        const params = new URLSearchParams(window.location.search);
+        params.set('section', activeInsightSection);
+        query = `?${params.toString()}`;
+      }
+      const endpoint = `/api/${tabName}${query}`;
       apiLink.href = endpoint;
       apiLink.textContent = `JSON /api/${tabName}`;
       refreshBtn.disabled = true;
@@ -611,6 +802,31 @@
 
     for (const tab of tabs) {
       tab.addEventListener('click', () => selectTab(tab.dataset.tab));
+    }
+
+    for (const st of platformSubtabs) {
+      st.addEventListener('click', () => {
+        activePlatformMode = st.dataset.platformMode;
+        for (const b of platformSubtabs) {
+          b.setAttribute('aria-selected', b === st ? 'true' : 'false');
+        }
+        if (lastPlatformData) {
+          renderTabData('platforms', lastPlatformData);
+        }
+      });
+    }
+
+    for (const st of insightSubtabs) {
+      st.addEventListener('click', () => {
+        activeInsightSection = st.dataset.insightSection;
+        for (const b of insightSubtabs) {
+          b.setAttribute('aria-selected', b === st ? 'true' : 'false');
+        }
+        for (const p of insightPanels) {
+          p.hidden = p.dataset.insightPanel !== activeInsightSection;
+        }
+        loadTab('insights');
+      });
     }
 
     refreshBtn.addEventListener('click', () => loadTab(activeTab));

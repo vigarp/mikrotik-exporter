@@ -61,6 +61,7 @@ OLT_PORT_ID=1
 - **`/api/router`** — Router hardware health (CPU, RAM, uptime, board name, RouterOS version).
 - **`/api/olt`** — HSGQ OLT PON port statistic monitor (latest/average/peak/min TX & RX Mbps, error/discard frames, supports `?port_id=`).
 - **`/api/platforms`** — Global active-connection Top Platforms summary under RB5009 (aggregates top `/24` prefixes by ASN/organization and matches `/ip/dns/cache` domains).
+- **`/api/insights`** — Read-only RB5009 operational insights (`?section=fleet|top_users|ports|routing|all`): PPPoE fleet/churn, top users by session bytes & active connections, port errors/health/SFP optical power, default gateways, and IP pool utilization.
 
 ### Base URL:
 - **Docker Production**: `http://localhost:8080/api` or `http://mikrotik_rest_api:8080/api`
