@@ -1400,7 +1400,7 @@ if (in_array($routeScope, ['all', 'connection', 'usage'], true) && $pppoeUser ==
 
 $insightSection = trim($_GET['section'] ?? 'fleet');
 $clientTimeout = ($routeScope === 'platforms' || ($routeScope === 'insights' && in_array($insightSection, ['top_users', 'all'], true)))
-    ? max($timeout, 15)
+    ? max($timeout, 25)
     : $timeout;
 $API = new RouterosRestClient($restUrl, $username, $password, $clientTimeout, $proxy);
 $connected = $API->connect();
