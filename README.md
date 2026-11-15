@@ -27,9 +27,9 @@ cp .env.example .env
 Example `.env` structure:
 
 ```env
-# MikroTik RouterOS Connection Configuration
-MIKROTIK_HOST=192.168.88.1
-MIKROTIK_PORT=8728
+# MikroTik RouterOS v7 REST API Configuration
+MIKROTIK_REST_URL=http://192.168.88.1/rest
+MIKROTIK_PROXY=
 MIKROTIK_USER=admin
 MIKROTIK_PASS=your_strong_password
 MIKROTIK_PPPOE_USER=your_pppoe_username
@@ -48,8 +48,12 @@ ENABLE_LOG=true
 ## 📡 API Usage & Query Parameters
 
 ### Endpoints:
-- **`/`** — Lightweight Web UI displaying live status, PPPoE session, data usage, ISP gateway, and router health.
-- **`/api`** — JSON healthcheck endpoint for Uptime Kuma and `curl` (supports `?user=...` and `?enrich=true`).
+- **`/`** — Lightweight Web UI with left sidebar tabs (each tab fetches only its dedicated `/api/*` endpoint).
+- **`/api`** — Full combined JSON healthcheck endpoint for Uptime Kuma and `curl` (supports `?user=...` and `?enrich=true`).
+- **`/api/connection`** — PPPoE session, profile/queue limits, latency, active connections, and disconnect history.
+- **`/api/usage`** — Live traffic (`kbps`), session data usage, and interface health counters.
+- **`/api/network`** — Public IP, optional IP intelligence (`?enrich=true`), DNS resolver, and ISP gateway status.
+- **`/api/router`** — Router hardware health (CPU, RAM, uptime, board name, RouterOS version).
 
 ### Base URL:
 - **Docker Production**: `http://localhost:8080/api` or `http://mikrotik_rest_api:8080/api`

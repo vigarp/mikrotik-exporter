@@ -4,7 +4,7 @@ FROM php:8.2-cli-alpine
 WORKDIR /var/www/html
 
 # Copy application files
-COPY routeros_api.class.php .
+COPY routeros_rest.class.php .
 COPY dashboard.php .
 COPY index.php .
 

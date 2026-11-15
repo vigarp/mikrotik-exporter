@@ -13,18 +13,27 @@ if ($normalizedPath === '/' || $normalizedPath === '/index.php') {
     exit;
 }
 
-// Serve JSON healthcheck API only on "/api"
-if ($normalizedPath !== '/api') {
+$apiRoutes = [
+    '/api'            => 'all',
+    '/api/connection' => 'connection',
+    '/api/usage'      => 'usage',
+    '/api/network'    => 'network',
+    '/api/router'     => 'router',
+];
+
+if (!isset($apiRoutes[$normalizedPath])) {
     header('Content-Type: application/json; charset=utf-8');
     http_response_code(404);
     echo json_encode([
         'status'  => 'ERROR',
-        'message' => 'Not Found. Use / for Web UI or /api for JSON healthcheck.'
+        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router.'
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
-require_once(__DIR__ . '/routeros_api.class.php');
+$routeScope = $apiRoutes[$normalizedPath];
+
+require_once(__DIR__ . '/routeros_rest.class.php');
 
 // Load .env file if running locally outside Docker
 if (file_exists(__DIR__ . '/.env')) {
@@ -45,8 +54,8 @@ if (file_exists(__DIR__ . '/.env')) {
 }
 
 // Configuration from environment variables
-$host        = getenv('MIKROTIK_HOST') ?: ($_ENV['MIKROTIK_HOST'] ?? ($_SERVER['MIKROTIK_HOST'] ?? '192.168.88.1'));
-$port        = (int)(getenv('MIKROTIK_PORT') ?: ($_ENV['MIKROTIK_PORT'] ?? ($_SERVER['MIKROTIK_PORT'] ?? 8728)));
+$restUrl     = trim(getenv('MIKROTIK_REST_URL') ?: ($_ENV['MIKROTIK_REST_URL'] ?? ($_SERVER['MIKROTIK_REST_URL'] ?? 'http://192.168.88.1/rest')));
+$proxy       = trim(getenv('MIKROTIK_PROXY') ?: ($_ENV['MIKROTIK_PROXY'] ?? ($_SERVER['MIKROTIK_PROXY'] ?? '')));
 $username    = getenv('MIKROTIK_USER') ?: ($_ENV['MIKROTIK_USER'] ?? ($_SERVER['MIKROTIK_USER'] ?? 'admin'));
 $password    = getenv('MIKROTIK_PASS') ?: ($_ENV['MIKROTIK_PASS'] ?? ($_SERVER['MIKROTIK_PASS'] ?? ''));
 $pppoeUser   = trim($_GET['user'] ?? (getenv('MIKROTIK_PPPOE_USER') ?: ($_ENV['MIKROTIK_PPPOE_USER'] ?? ($_SERVER['MIKROTIK_PPPOE_USER'] ?? ''))));
@@ -55,7 +64,7 @@ $enableIntel = (isset($_GET['enrich']) && ($_GET['enrich'] === 'true' || $_GET['
              || (isset($_GET['intel']) && ($_GET['intel'] === 'true' || $_GET['intel'] === '1'))
              || (getenv('ENABLE_EXTERNAL_INTEL') === 'true' || ($_ENV['ENABLE_EXTERNAL_INTEL'] ?? '') === 'true');
 $timeout     = (int)(getenv('MIKROTIK_TIMEOUT') ?: ($_ENV['MIKROTIK_TIMEOUT'] ?? ($_SERVER['MIKROTIK_TIMEOUT'] ?? 5)));
-$enableLog   = getenv('ENABLE_LOG') !== false 
+$enableLog   = getenv('ENABLE_LOG') !== false
              ? (filter_var(getenv('ENABLE_LOG') ?: ($_ENV['ENABLE_LOG'] ?? true), FILTER_VALIDATE_BOOLEAN))
              : true;
 
@@ -66,14 +75,12 @@ function respond($status_code, $data) {
     http_response_code($status_code);
     $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
-    // Output formatted JSON to stdout/stderr so it is captured in Portainer / Docker logs
     if ($enableLog) {
         $reqMethod = $_SERVER['REQUEST_METHOD'] ?? 'GET';
         $reqUri    = $_SERVER['REQUEST_URI'] ?? '/';
         $clientIp  = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
         $timestamp = date('D M d H:i:s Y');
         $logHeader = sprintf("[%s] [%s] %s %s -> HTTP %d", $timestamp, $clientIp, $reqMethod, $reqUri, $status_code);
-
         @file_put_contents('php://stdout', $logHeader . "\n" . $json . "\n\n");
     }
 
@@ -81,7 +88,6 @@ function respond($status_code, $data) {
     exit;
 }
 
-// Helper to format rate limit string like "10M/10M" (or with burst "10M/10M 20M/20M ...") into Mbps
 function parseRateLimit($rateStr) {
     if (!$rateStr) return null;
     $baseRate = explode(' ', trim($rateStr))[0];
@@ -111,7 +117,6 @@ function parseRateLimit($rateStr) {
     ];
 }
 
-// Helper to format byte counts into human-readable strings (e.g., "1.45 GB", "320.10 MB")
 function formatBytes($bytes, $precision = 2) {
     if (!$bytes || $bytes <= 0) return '0 B';
     $units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
@@ -121,7 +126,21 @@ function formatBytes($bytes, $precision = 2) {
     return round($bytes, $precision) . ' ' . $units[$pow];
 }
 
-// Helper to fetch IP Intelligence (ASN, ISP, Region) via Cloudflare Radar API with IP-API fallback
+function parseRouterOsRttMs($rttStr) {
+    if (!$rttStr || !is_string($rttStr)) return null;
+    $ms = 0.0;
+    if (preg_match('/(\d+)s/', $rttStr, $m)) {
+        $ms += (int)$m[1] * 1000;
+    }
+    if (preg_match('/(\d+)ms/', $rttStr, $m)) {
+        $ms += (int)$m[1];
+    }
+    if (preg_match('/(\d+)us/', $rttStr, $m)) {
+        $ms += (int)$m[1] / 1000;
+    }
+    return round($ms, 2);
+}
+
 function getIpIntelligence($publicIp, $cfToken = null) {
     if (!$publicIp) return null;
 
@@ -136,7 +155,6 @@ function getIpIntelligence($publicIp, $cfToken = null) {
         'city'      => null
     ];
 
-    // Try Cloudflare Radar API if token is provided
     if (!empty($cfToken) && function_exists('curl_init')) {
         $ch = curl_init();
         curl_setopt($ch, CURLOPT_URL, "https://api.cloudflare.com/client/v4/radar/entities/asns/ip?ip=" . urlencode($publicIp));
@@ -164,7 +182,6 @@ function getIpIntelligence($publicIp, $cfToken = null) {
         }
     }
 
-    // Fallback: IP-API lookup
     $context = stream_context_create(['http' => ['timeout' => 3]]);
     $apiUrl = "http://ip-api.com/json/" . urlencode($publicIp) . "?fields=status,country,regionName,city,isp,org,as";
     $jsonRaw = @file_get_contents($apiUrl, false, $context);
@@ -183,7 +200,276 @@ function getIpIntelligence($publicIp, $cfToken = null) {
     return $info;
 }
 
-if ($pppoeUser === '') {
+function rosGet($API, $path, array $query = []) {
+    return $API->get($path, $query);
+}
+
+function rosAction($API, $path, array $payload = []) {
+    return $API->post($path, $payload);
+}
+
+function rosCountFirewallConn($API, $clientIp) {
+    $res = $API->post('/ip/firewall/connection/print', [
+        'count-only' => '',
+        '.query'     => ['src-address=' . $clientIp]
+    ]);
+    return is_array($res) && isset($res['ret']) && is_numeric($res['ret']) ? (int)$res['ret'] : null;
+}
+
+function resolvePppoeInterface($API, $pppoeUser, $withMonitorTraffic = false) {
+    $candidates = [
+        '<pppoe-' . $pppoeUser . '>',
+        'pppoe-' . $pppoeUser,
+        '<' . $pppoeUser . '>',
+        $pppoeUser
+    ];
+
+    foreach ($candidates as $ifaceName) {
+        if ($withMonitorTraffic) {
+            $traffic = rosAction($API, '/interface/monitor-traffic', [
+                'interface' => $ifaceName,
+                'once'      => ''
+            ]);
+
+            if (!empty($traffic) && !isset($traffic['!trap'])) {
+                $txBps = (int)($traffic[0]['tx-bits-per-second'] ?? 0);
+                $rxBps = (int)($traffic[0]['rx-bits-per-second'] ?? 0);
+                return [
+                    'matched_iface' => $ifaceName,
+                    'live_traffic'  => [
+                        'interface_name' => $ifaceName,
+                        'upload_kbps'    => round($rxBps / 1000, 2),
+                        'download_kbps'  => round($txBps / 1000, 2),
+                        'tx_bps'         => $txBps,
+                        'rx_bps'         => $rxBps
+                    ]
+                ];
+            }
+        } else {
+            $res = rosGet($API, '/interface', ['name' => $ifaceName]);
+            if (!empty($res) && isset($res[0])) {
+                return ['matched_iface' => $ifaceName, 'iface_row' => $res[0]];
+            }
+        }
+    }
+
+    return ['matched_iface' => null, 'live_traffic' => null, 'iface_row' => null];
+}
+
+function fetchPppoeActive($API, $pppoeUser) {
+    return rosGet($API, '/ppp/active', ['name' => $pppoeUser]);
+}
+
+function fetchPppoeSecretAndLimit($API, $pppoeUser) {
+    $secret = rosGet($API, '/ppp/secret', ['name' => $pppoeUser]);
+
+    $profileName = $secret[0]['profile'] ?? null;
+    $rateLimit = null;
+
+    if (!empty($profileName)) {
+        $profile = rosGet($API, '/ppp/profile', ['name' => $profileName]);
+        $rateLimitStr = $profile[0]['rate-limit'] ?? ($secret[0]['rate-limit'] ?? null);
+        $rateLimit = parseRateLimit($rateLimitStr);
+    }
+
+    return [
+        'profile_name'    => $profileName,
+        'bandwidth_limit' => $rateLimit,
+        'secret_info'     => [
+            'disabled'               => isset($secret[0]['disabled']) ? ($secret[0]['disabled'] === 'true') : null,
+            'last_logged_out'        => $secret[0]['last-logged-out'] ?? null,
+            'last_disconnect_reason' => $secret[0]['last-disconnect-reason'] ?? null,
+            'last_caller_id'         => $secret[0]['last-caller-id'] ?? null
+        ]
+    ];
+}
+
+function fetchConnectionExtras($API, $matchedIface, $clientIp) {
+    $queueLimit = null;
+    $activeConnections = null;
+    $latency = null;
+
+    if ($matchedIface) {
+        $queues = rosGet($API, '/queue/simple', ['target' => $matchedIface]);
+        if (!empty($queues) && isset($queues[0])) {
+            $q = $queues[0];
+            $queueLimit = [
+                'limit_at'       => parseRateLimit($q['limit-at'] ?? null),
+                'max_limit'      => parseRateLimit($q['max-limit'] ?? null),
+                'burst_limit'    => $q['burst-limit'] ?? null,
+                'dropped'        => $q['dropped'] ?? '0/0',
+                'queued_packets' => $q['queued-packets'] ?? '0/0'
+            ];
+        }
+    }
+
+    if ($clientIp) {
+        $activeConnections = rosCountFirewallConn($API, $clientIp);
+
+        $pingResp = rosAction($API, '/ping', [
+            'address' => $clientIp,
+            'count'   => '2'
+        ]);
+        if (is_array($pingResp) && !isset($pingResp['!trap']) && !empty($pingResp)) {
+            $lastPing = end($pingResp);
+            if (is_array($lastPing)) {
+                $latency = [
+                    'target_ip'           => $clientIp,
+                    'avg_rtt_ms'          => parseRouterOsRttMs($lastPing['avg-rtt'] ?? null),
+                    'min_rtt_ms'          => parseRouterOsRttMs($lastPing['min-rtt'] ?? null),
+                    'max_rtt_ms'          => parseRouterOsRttMs($lastPing['max-rtt'] ?? null),
+                    'packet_loss_percent' => isset($lastPing['packet-loss']) ? (int)$lastPing['packet-loss'] : null
+                ];
+            }
+        }
+    }
+
+    return [
+        'queue_limit'        => $queueLimit,
+        'active_connections' => $activeConnections,
+        'latency'            => $latency
+    ];
+}
+
+function fetchUsageAndInterface($API, $pppoeUser) {
+    $resolved = resolvePppoeInterface($API, $pppoeUser, true);
+    $matchedIface = $resolved['matched_iface'];
+    $trafficData = $resolved['live_traffic'];
+    $dataUsage = null;
+    $interfaceHealth = null;
+
+    if ($matchedIface) {
+        $ifaceStats = rosGet($API, '/interface', ['name' => $matchedIface]);
+
+        if (!empty($ifaceStats) && isset($ifaceStats[0])) {
+            $st = $ifaceStats[0];
+            $rxBytes = (float)($st['rx-byte'] ?? 0);
+            $txBytes = (float)($st['tx-byte'] ?? 0);
+            $totalBytes = $rxBytes + $txBytes;
+
+            $dataUsage = [
+                'session_download_mb'    => round($txBytes / 1048576, 2),
+                'session_upload_mb'      => round($rxBytes / 1048576, 2),
+                'session_total_mb'       => round($totalBytes / 1048576, 2),
+                'session_total_human'    => formatBytes($totalBytes),
+                'session_download_human' => formatBytes($txBytes),
+                'session_upload_human'   => formatBytes($rxBytes),
+                'tx_bytes'               => (int)$txBytes,
+                'rx_bytes'               => (int)$rxBytes,
+                'total_bytes'            => (int)$totalBytes
+            ];
+
+            $interfaceHealth = [
+                'actual_mtu'        => isset($st['actual-mtu']) ? (int)$st['actual-mtu'] : null,
+                'last_link_up_time' => $st['last-link-up-time'] ?? null,
+                'link_downs'        => (int)($st['link-downs'] ?? 0),
+                'rx_packets'        => (int)($st['rx-packet'] ?? 0),
+                'tx_packets'        => (int)($st['tx-packet'] ?? 0),
+                'rx_drop'           => (int)($st['rx-drop'] ?? 0),
+                'tx_drop'           => (int)($st['tx-drop'] ?? 0),
+                'tx_queue_drop'     => (int)($st['tx-queue-drop'] ?? 0),
+                'rx_error'          => (int)($st['rx-error'] ?? 0),
+                'tx_error'          => (int)($st['tx-error'] ?? 0)
+            ];
+        }
+    }
+
+    return [
+        'matched_iface'    => $matchedIface,
+        'live_traffic'     => $trafficData,
+        'data_usage'       => $dataUsage,
+        'interface_health' => $interfaceHealth
+    ];
+}
+
+function fetchNetworkHealth($API, $enableIntel, $cfToken) {
+    $publicIp = null;
+    $cloud = rosGet($API, '/ip/cloud');
+    if (!empty($cloud) && isset($cloud[0]['public-address'])) {
+        $publicIp = $cloud[0]['public-address'];
+    }
+
+    if (!$publicIp) {
+        $addresses = rosGet($API, '/ip/address');
+        if (is_array($addresses)) {
+            foreach ($addresses as $addr) {
+                $ipRaw = explode('/', $addr['address'] ?? '')[0];
+                if (filter_var($ipRaw, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                    $publicIp = $ipRaw;
+                    break;
+                }
+            }
+        }
+    }
+
+    $ipIntel = ($enableIntel && $publicIp) ? getIpIntelligence($publicIp, $cfToken) : null;
+
+    $dns = rosGet($API, '/ip/dns');
+    $dnsResolver = null;
+    if (!empty($dns)) {
+        $staticDns  = !empty($dns[0]['servers']) ? explode(',', $dns[0]['servers']) : [];
+        $dynamicDns = !empty($dns[0]['dynamic-servers']) ? explode(',', $dns[0]['dynamic-servers']) : [];
+        $allDns     = array_values(array_unique(array_filter(array_merge($staticDns, $dynamicDns))));
+
+        $dnsResolver = [
+            'servers'      => $allDns,
+            'static'       => $dns[0]['servers'] ?? null,
+            'dynamic'      => $dns[0]['dynamic-servers'] ?? null,
+            'allow_remote' => (isset($dns[0]['allow-remote-requests']) && $dns[0]['allow-remote-requests'] === 'true')
+        ];
+    }
+
+    $routes = rosGet($API, '/ip/route', ['dst-address' => '0.0.0.0/0']);
+    $gatewayStatus = null;
+    if (!empty($routes)) {
+        $activeRoute = null;
+        foreach ($routes as $r) {
+            if (isset($r['active']) && $r['active'] === 'true') {
+                $activeRoute = $r;
+                break;
+            }
+        }
+        if (!$activeRoute && isset($routes[0])) {
+            $activeRoute = $routes[0];
+        }
+
+        if ($activeRoute) {
+            $isReachable = (isset($activeRoute['active']) && $activeRoute['active'] === 'true');
+            $gatewayStatus = [
+                'gateway_ip' => $activeRoute['gateway'] ?? ($activeRoute['immediate-gw'] ?? null),
+                'active'     => $isReachable,
+                'status'     => $isReachable ? 'REACHABLE' : 'UNREACHABLE',
+                'distance'   => (int)($activeRoute['distance'] ?? 1),
+                'comment'    => $activeRoute['comment'] ?? null
+            ];
+        }
+    }
+
+    return [
+        'public_ip'       => $publicIp,
+        'ip_intelligence' => $ipIntel,
+        'dns_resolver'    => $dnsResolver,
+        'isp_gateway'     => $gatewayStatus
+    ];
+}
+
+function fetchRouterSystem($API) {
+    $resource = rosGet($API, '/system/resource');
+    if (empty($resource)) return null;
+
+    $freeMem = (int)($resource[0]['free-memory'] ?? 0);
+    $totalMem = (int)($resource[0]['total-memory'] ?? 0);
+    return [
+        'cpu_load_percent' => (int)($resource[0]['cpu-load'] ?? 0),
+        'free_memory_mb'   => round($freeMem / 1048576, 2),
+        'total_memory_mb'  => round($totalMem / 1048576, 2),
+        'uptime'           => $resource[0]['uptime'] ?? null,
+        'board_name'       => $resource[0]['board-name'] ?? null,
+        'version'          => $resource[0]['version'] ?? null
+    ];
+}
+
+if (in_array($routeScope, ['all', 'connection', 'usage'], true) && $pppoeUser === '') {
     respond(400, [
         'status'    => 'ERROR',
         'online'    => false,
@@ -192,196 +478,134 @@ if ($pppoeUser === '') {
     ]);
 }
 
-$API = new RouterosAPI();
-$API->port = $port;
-$API->timeout = $timeout;
-$API->attempts = 2;
-$API->delay = 1;
+$API = new RouterosRestClient($restUrl, $username, $password, $timeout, $proxy);
+$connected = $API->connect();
 
-if ($API->connect($host, $username, $password)) {
+if ($connected) {
     try {
-        // 1. Query Active PPPoE Session
-        $API->write('/ppp/active/print', false);
-        $API->write('?name=' . $pppoeUser);
-        $active = $API->read();
-
-        // 2. Query PPPoE Secret & Profile for Bandwidth Limit info
-        $API->write('/ppp/secret/print', false);
-        $API->write('?name=' . $pppoeUser);
-        $secret = $API->read();
-
-        $profileName = $secret[0]['profile'] ?? null;
-        $rateLimit = null;
-        
-        if (!empty($profileName)) {
-            $API->write('/ppp/profile/print', false);
-            $API->write('?name=' . $profileName);
-            $profile = $API->read();
-            $rateLimitStr = $profile[0]['rate-limit'] ?? ($secret[0]['rate-limit'] ?? null);
-            $rateLimit = parseRateLimit($rateLimitStr);
-        }
-
-        // 3. Monitor Live Traffic & Session Data Usage if user is online
-        $trafficData = null;
-        $dataUsage   = null;
-        if (!empty($active)) {
-            $interfaceCandidates = [
-                '<pppoe-' . $pppoeUser . '>',
-                'pppoe-' . $pppoeUser,
-                '<' . $pppoeUser . '>',
-                $pppoeUser
-            ];
-
-            $matchedIface = null;
-            foreach ($interfaceCandidates as $ifaceName) {
-                $API->write('/interface/monitor-traffic', false);
-                $API->write('=interface=' . $ifaceName, false);
-                $API->write('=once=');
-                $traffic = $API->read();
-
-                if (!empty($traffic) && !isset($traffic['!trap'])) {
-                    $matchedIface = $ifaceName;
-                    $txBps = (int)($traffic[0]['tx-bits-per-second'] ?? 0);
-                    $rxBps = (int)($traffic[0]['rx-bits-per-second'] ?? 0);
-                    $trafficData = [
-                        'interface_name' => $ifaceName,
-                        'upload_kbps'   => round($rxBps / 1000, 2),
-                        'download_kbps' => round($txBps / 1000, 2),
-                        'tx_bps'        => $txBps,
-                        'rx_bps'        => $rxBps
-                    ];
-                    break;
-                }
+        if ($routeScope === 'connection') {
+            $active = fetchPppoeActive($API, $pppoeUser);
+            $secretInfo = fetchPppoeSecretAndLimit($API, $pppoeUser);
+            $isOnline = !empty($active);
+            $extras = ['queue_limit' => null, 'active_connections' => null, 'latency' => null];
+            if ($isOnline) {
+                $iface = resolvePppoeInterface($API, $pppoeUser, false);
+                $extras = fetchConnectionExtras($API, $iface['matched_iface'], $active[0]['address'] ?? null);
             }
+            $API->disconnect();
 
-            // Query total bytes transferred during this active session
-            if ($matchedIface) {
-                $API->write('/interface/print', false);
-                $API->write('?name=' . $matchedIface);
-                $ifaceStats = $API->read();
-
-                if (!empty($ifaceStats) && isset($ifaceStats[0])) {
-                    $rxBytes = (float)($ifaceStats[0]['rx-byte'] ?? 0);
-                    $txBytes = (float)($ifaceStats[0]['tx-byte'] ?? 0);
-                    $totalBytes = $rxBytes + $txBytes;
-
-                    $dataUsage = [
-                        'session_download_mb'    => round($txBytes / 1048576, 2),
-                        'session_upload_mb'      => round($rxBytes / 1048576, 2),
-                        'session_total_mb'       => round($totalBytes / 1048576, 2),
-                        'session_total_human'    => formatBytes($totalBytes),
-                        'session_download_human' => formatBytes($txBytes),
-                        'session_upload_human'   => formatBytes($rxBytes),
-                        'tx_bytes'               => (int)$txBytes,
-                        'rx_bytes'               => (int)$rxBytes,
-                        'total_bytes'            => (int)$totalBytes
-                    ];
-                }
-            }
+            respond($isOnline ? 200 : 503, [
+                'status'    => $isOnline ? 'UP' : 'DOWN',
+                'online'    => $isOnline,
+                'timestamp' => date('c'),
+                'diagnostics' => [
+                    'router_connected'  => true,
+                    'router_status'     => 'ONLINE',
+                    'user_pppoe_status' => $isOnline ? 'ONLINE' : 'OFFLINE',
+                    'overall_health'    => $isOnline ? 'ALL_SYSTEMS_OPERATIONAL' : 'USER_DISCONNECTED'
+                ],
+                'home_connection' => [
+                    'user'               => $pppoeUser,
+                    'ip_address'         => $active[0]['address'] ?? null,
+                    'uptime'             => $active[0]['uptime'] ?? null,
+                    'caller_id'          => $active[0]['caller-id'] ?? null,
+                    'session_id'         => $active[0]['session-id'] ?? null,
+                    'radius'             => isset($active[0]['radius']) ? ($active[0]['radius'] === 'true') : null,
+                    'profile_name'       => $secretInfo['profile_name'],
+                    'bandwidth_limit'    => $secretInfo['bandwidth_limit'],
+                    'queue_limit'        => $extras['queue_limit'],
+                    'active_connections' => $extras['active_connections'],
+                    'latency'            => $extras['latency'],
+                    'secret_info'        => $secretInfo['secret_info']
+                ]
+            ]);
         }
 
-        // 4. Query Public IP (via IP Cloud or IP Address list fallback)
-        $publicIp = null;
-        $API->write('/ip/cloud/print');
-        $cloud = $API->read();
-        if (!empty($cloud) && isset($cloud[0]['public-address'])) {
-            $publicIp = $cloud[0]['public-address'];
+        if ($routeScope === 'usage') {
+            $active = fetchPppoeActive($API, $pppoeUser);
+            $isOnline = !empty($active);
+            $usage = $isOnline
+                ? fetchUsageAndInterface($API, $pppoeUser)
+                : ['live_traffic' => null, 'data_usage' => null, 'interface_health' => null];
+            $API->disconnect();
+
+            respond($isOnline ? 200 : 503, [
+                'status'    => $isOnline ? 'UP' : 'DOWN',
+                'online'    => $isOnline,
+                'timestamp' => date('c'),
+                'diagnostics' => [
+                    'router_connected'  => true,
+                    'router_status'     => 'ONLINE',
+                    'user_pppoe_status' => $isOnline ? 'ONLINE' : 'OFFLINE',
+                    'overall_health'    => $isOnline ? 'ALL_SYSTEMS_OPERATIONAL' : 'USER_DISCONNECTED'
+                ],
+                'home_connection' => [
+                    'user'             => $pppoeUser,
+                    'uptime'           => $active[0]['uptime'] ?? null,
+                    'data_usage'       => $usage['data_usage'],
+                    'live_traffic'     => $usage['live_traffic'],
+                    'interface_health' => $usage['interface_health']
+                ]
+            ]);
         }
 
-        if (!$publicIp) {
-            $API->write('/ip/address/print');
-            $addresses = $API->read();
-            if (is_array($addresses)) {
-                foreach ($addresses as $addr) {
-                    $ipRaw = explode('/', $addr['address'] ?? '')[0];
-                    if (filter_var($ipRaw, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
-                        $publicIp = $ipRaw;
-                        break;
-                    }
-                }
-            }
+        if ($routeScope === 'network') {
+            $network = fetchNetworkHealth($API, $enableIntel, $cfToken);
+            $API->disconnect();
+            $gwStatusStr = $network['isp_gateway']['status'] ?? 'UNKNOWN';
+
+            respond(200, [
+                'status'    => $gwStatusStr === 'UNREACHABLE' ? 'DEGRADED' : 'UP',
+                'online'    => $gwStatusStr !== 'UNREACHABLE',
+                'timestamp' => date('c'),
+                'diagnostics' => [
+                    'router_connected'   => true,
+                    'router_status'      => 'ONLINE',
+                    'isp_gateway_status' => $gwStatusStr,
+                    'overall_health'     => $gwStatusStr === 'UNREACHABLE' ? 'ISP_GATEWAY_DOWN' : 'ALL_SYSTEMS_OPERATIONAL'
+                ],
+                'network_health' => $network
+            ]);
         }
 
-        // Fetch IP Intelligence only if enabled via ?enrich=true or ENABLE_EXTERNAL_INTEL=true
-        $ipIntel = null;
-        if ($enableIntel && $publicIp) {
-            $ipIntel = getIpIntelligence($publicIp, $cfToken);
+        if ($routeScope === 'router') {
+            $routerHealth = fetchRouterSystem($API);
+            $API->disconnect();
+
+            respond(200, [
+                'status'    => 'UP',
+                'online'    => true,
+                'timestamp' => date('c'),
+                'diagnostics' => [
+                    'router_connected' => true,
+                    'router_status'    => 'ONLINE',
+                    'overall_health'   => 'ALL_SYSTEMS_OPERATIONAL'
+                ],
+                'network_health' => [
+                    'router_system' => $routerHealth
+                ]
+            ]);
         }
 
-        // 5. Query DNS Resolver Configuration
-        $API->write('/ip/dns/print');
-        $dns = $API->read();
+        // Default '/api' full combined healthcheck
+        $active = fetchPppoeActive($API, $pppoeUser);
+        $secretInfo = fetchPppoeSecretAndLimit($API, $pppoeUser);
+        $isOnline = !empty($active);
 
-        $dnsResolver = null;
-        if (!empty($dns)) {
-            $staticDns  = !empty($dns[0]['servers']) ? explode(',', $dns[0]['servers']) : [];
-            $dynamicDns = !empty($dns[0]['dynamic-servers']) ? explode(',', $dns[0]['dynamic-servers']) : [];
-            $allDns     = array_values(array_unique(array_filter(array_merge($staticDns, $dynamicDns))));
+        $usage = $isOnline
+            ? fetchUsageAndInterface($API, $pppoeUser)
+            : ['matched_iface' => null, 'live_traffic' => null, 'data_usage' => null, 'interface_health' => null];
 
-            $dnsResolver = [
-                'servers'      => $allDns,
-                'static'       => $dns[0]['servers'] ?? null,
-                'dynamic'      => $dns[0]['dynamic-servers'] ?? null,
-                'allow_remote' => (isset($dns[0]['allow-remote-requests']) && $dns[0]['allow-remote-requests'] === 'true')
-            ];
-        }
+        $extras = $isOnline
+            ? fetchConnectionExtras($API, $usage['matched_iface'], $active[0]['address'] ?? null)
+            : ['queue_limit' => null, 'active_connections' => null, 'latency' => null];
 
-        // 6. Query ISP Gateway / Default Route Status (0.0.0.0/0)
-        $API->write('/ip/route/print', false);
-        $API->write('?dst-address=0.0.0.0/0');
-        $routes = $API->read();
-        
-        $gatewayStatus = null;
-        if (!empty($routes)) {
-            $activeRoute = null;
-            foreach ($routes as $r) {
-                if (isset($r['active']) && $r['active'] === 'true') {
-                    $activeRoute = $r;
-                    break;
-                }
-            }
-            if (!$activeRoute && isset($routes[0])) {
-                $activeRoute = $routes[0];
-            }
-
-            if ($activeRoute) {
-                $isReachable = (isset($activeRoute['active']) && $activeRoute['active'] === 'true');
-                $gatewayStatus = [
-                    'gateway_ip' => $activeRoute['gateway'] ?? ($activeRoute['immediate-gw'] ?? null),
-                    'active'     => $isReachable,
-                    'status'     => $isReachable ? 'REACHABLE' : 'UNREACHABLE',
-                    'distance'   => (int)($activeRoute['distance'] ?? 1),
-                    'comment'    => $activeRoute['comment'] ?? null
-                ];
-            }
-        }
-
-        // 7. Query Router System Resource
-        $API->write('/system/resource/print');
-        $resource = $API->read();
-
-        $routerHealth = null;
-        if (!empty($resource)) {
-            $freeMem = (int)($resource[0]['free-memory'] ?? 0);
-            $totalMem = (int)($resource[0]['total-memory'] ?? 0);
-            $routerHealth = [
-                'cpu_load_percent' => (int)($resource[0]['cpu-load'] ?? 0),
-                'free_memory_mb'   => round($freeMem / 1048576, 2),
-                'total_memory_mb'  => round($totalMem / 1048576, 2),
-                'uptime'           => $resource[0]['uptime'] ?? null,
-                'board_name'       => $resource[0]['board-name'] ?? null,
-                'version'          => $resource[0]['version'] ?? null
-            ];
-        }
-
+        $network = fetchNetworkHealth($API, $enableIntel, $cfToken);
+        $routerHealth = fetchRouterSystem($API);
         $API->disconnect();
 
-        // Evaluate Diagnostic Statuses for 3 Failure Scenarios
-        $isOnline    = !empty($active);
         $userStatus  = $isOnline ? 'ONLINE' : 'OFFLINE';
-        $gwStatusStr = $gatewayStatus['status'] ?? 'UNKNOWN';
-        $routerStatus= 'ONLINE';
-
+        $gwStatusStr = $network['isp_gateway']['status'] ?? 'UNKNOWN';
         $overallHealth = 'ALL_SYSTEMS_OPERATIONAL';
         if ($userStatus === 'OFFLINE') {
             $overallHealth = 'USER_DISCONNECTED';
@@ -389,36 +613,37 @@ if ($API->connect($host, $username, $password)) {
             $overallHealth = 'ISP_GATEWAY_DOWN';
         }
 
-        $statusCode = $isOnline ? 200 : 503;
-
-        respond($statusCode, [
+        respond($isOnline ? 200 : 503, [
             'status'    => $isOnline ? 'UP' : 'DOWN',
             'online'    => $isOnline,
             'timestamp' => date('c'),
             'diagnostics' => [
                 'router_connected'   => true,
-                'router_status'      => $routerStatus,
+                'router_status'      => 'ONLINE',
                 'user_pppoe_status'  => $userStatus,
                 'isp_gateway_status' => $gwStatusStr,
                 'overall_health'     => $overallHealth
             ],
             'home_connection' => [
-                'user'            => $pppoeUser,
-                'ip_address'      => $active[0]['address'] ?? null,
-                'uptime'          => $active[0]['uptime'] ?? null,
-                'caller_id'       => $active[0]['caller-id'] ?? null,
-                'profile_name'    => $profileName,
-                'bandwidth_limit' => $rateLimit,
-                'data_usage'      => $dataUsage,
-                'live_traffic'    => $trafficData
+                'user'               => $pppoeUser,
+                'ip_address'         => $active[0]['address'] ?? null,
+                'uptime'             => $active[0]['uptime'] ?? null,
+                'caller_id'          => $active[0]['caller-id'] ?? null,
+                'session_id'         => $active[0]['session-id'] ?? null,
+                'radius'             => isset($active[0]['radius']) ? ($active[0]['radius'] === 'true') : null,
+                'profile_name'       => $secretInfo['profile_name'],
+                'bandwidth_limit'    => $secretInfo['bandwidth_limit'],
+                'queue_limit'        => $extras['queue_limit'],
+                'data_usage'         => $usage['data_usage'],
+                'live_traffic'       => $usage['live_traffic'],
+                'interface_health'   => $usage['interface_health'],
+                'active_connections' => $extras['active_connections'],
+                'latency'            => $extras['latency'],
+                'secret_info'        => $secretInfo['secret_info']
             ],
-            'network_health' => [
-                'public_ip'       => $publicIp,
-                'ip_intelligence' => $ipIntel,
-                'dns_resolver'    => $dnsResolver,
-                'isp_gateway'     => $gatewayStatus,
-                'router_system'   => $routerHealth
-            ]
+            'network_health' => array_merge($network, [
+                'router_system' => $routerHealth
+            ])
         ]);
 
     } catch (Exception $e) {
