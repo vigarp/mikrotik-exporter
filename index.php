@@ -20,6 +20,7 @@ $apiRoutes = [
     '/api/network'    => 'network',
     '/api/router'     => 'router',
     '/api/olt'        => 'olt',
+    '/api/platforms'  => 'platforms',
 ];
 
 if (!isset($apiRoutes[$normalizedPath])) {
@@ -27,7 +28,7 @@ if (!isset($apiRoutes[$normalizedPath])) {
     http_response_code(404);
     echo json_encode([
         'status'  => 'ERROR',
-        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router, /api/olt.'
+        'message' => 'Not Found. Use / for Web UI or /api, /api/connection, /api/usage, /api/network, /api/router, /api/olt, /api/platforms.'
     ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
     exit;
 }
@@ -608,6 +609,284 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
     ];
 }
 
+function normalizePlatformName($asStr, $org, $isp) {
+    $asn = '';
+    $asDesc = '';
+    if (preg_match('/^(AS\d+)\s*(.*)$/i', (string)$asStr, $m)) {
+        $asn = strtoupper($m[1]);
+        $asDesc = trim($m[2]);
+    }
+
+    $asnMap = [
+        'AS15169'  => 'Google / YouTube',
+        'AS36040'  => 'Google / YouTube',
+        'AS32934'  => 'Meta (FB / IG / WA)',
+        'AS63293'  => 'Meta (FB / IG / WA)',
+        'AS13335'  => 'Cloudflare',
+        'AS209242' => 'Cloudflare',
+        'AS396986' => 'ByteDance / TikTok',
+        'AS138697' => 'ByteDance / TikTok',
+        'AS16509'  => 'Amazon AWS',
+        'AS14618'  => 'Amazon AWS',
+        'AS8075'   => 'Microsoft / Azure',
+        'AS20940'  => 'Akamai',
+        'AS16625'  => 'Akamai',
+        'AS54113'  => 'Fastly',
+        'AS32590'  => 'Valve / Steam',
+        'AS132203' => 'Tencent',
+        'AS45102'  => 'Alibaba Cloud',
+        'AS2906'   => 'Netflix',
+        'AS40027'  => 'Netflix',
+        'AS62041'  => 'Telegram',
+        'AS62014'  => 'Telegram',
+        'AS59930'  => 'Telegram',
+        'AS136907' => 'Huawei Cloud',
+        'AS714'    => 'Apple',
+        'AS6185'   => 'Apple',
+    ];
+    if ($asn !== '' && isset($asnMap[$asn])) {
+        return [$asn, $asnMap[$asn]];
+    }
+
+    $label = trim((string)($org ?: ($isp ?: ($asDesc ?: 'Unknown'))));
+    $lower = strtolower($label);
+    $keywordMap = [
+        'google'     => 'Google / YouTube',
+        'facebook'   => 'Meta (FB / IG / WA)',
+        'meta '      => 'Meta (FB / IG / WA)',
+        'bytedance'  => 'ByteDance / TikTok',
+        'tiktok'     => 'ByteDance / TikTok',
+        'cloudflare' => 'Cloudflare',
+        'amazon'     => 'Amazon AWS',
+        'microsoft'  => 'Microsoft / Azure',
+        'akamai'     => 'Akamai',
+        'fastly'     => 'Fastly',
+        'tencent'    => 'Tencent',
+        'alibaba'    => 'Alibaba Cloud',
+        'netflix'    => 'Netflix',
+        'apple'      => 'Apple',
+        'garena'     => 'Garena',
+        'moonton'    => 'Moonton / MLBB',
+    ];
+    foreach ($keywordMap as $kw => $friendly) {
+        if (strpos($lower, $kw) !== false) {
+            return [$asn ?: '-', $friendly];
+        }
+    }
+
+    return [$asn ?: '-', $label];
+}
+
+function resolvePrefixAsns($prefixSampleIps) {
+    $cacheFile = '/tmp/mikrotik_asn_cache.json';
+    $now = time();
+    $cache = [];
+    if (file_exists($cacheFile)) {
+        $decoded = json_decode((string)@file_get_contents($cacheFile), true);
+        if (is_array($decoded)) {
+            foreach ($decoded as $k => $entry) {
+                if (($entry['ts'] ?? 0) + 86400 > $now) {
+                    $cache[$k] = $entry;
+                }
+            }
+        }
+    }
+
+    $toQuery = [];
+    $ipToPrefix = [];
+    foreach ($prefixSampleIps as $prefix => $ip) {
+        if (!isset($cache[$prefix])) {
+            $toQuery[] = $ip;
+            $ipToPrefix[$ip] = $prefix;
+        }
+    }
+
+    if (!empty($toQuery) && function_exists('curl_init')) {
+        foreach (array_chunk($toQuery, 100) as $chunk) {
+            $ch = curl_init('http://ip-api.com/batch?fields=query,status,as,org,isp,countryCode');
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => json_encode($chunk),
+                CURLOPT_HTTPHEADER     => ['Content-Type: application/json'],
+                CURLOPT_CONNECTTIMEOUT => 5,
+                CURLOPT_TIMEOUT        => 8,
+            ]);
+            $raw = curl_exec($ch);
+            $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+
+            if ($httpCode === 200 && $raw) {
+                $rows = json_decode($raw, true);
+                if (is_array($rows)) {
+                    foreach ($rows as $row) {
+                        $q = $row['query'] ?? null;
+                        if (!$q || !isset($ipToPrefix[$q]) || ($row['status'] ?? '') !== 'success') {
+                            continue;
+                        }
+                        $prefix = $ipToPrefix[$q];
+                        list($asn, $platform) = normalizePlatformName($row['as'] ?? '', $row['org'] ?? '', $row['isp'] ?? '');
+                        $cache[$prefix] = [
+                            'ts'       => $now,
+                            'asn'      => $asn,
+                            'platform' => $platform,
+                            'country'  => $row['countryCode'] ?? null,
+                        ];
+                    }
+                }
+            }
+        }
+        @file_put_contents($cacheFile, json_encode($cache));
+    }
+
+    return $cache;
+}
+
+function fetchGlobalPlatforms($API) {
+    $connections = rosGet($API, '/ip/firewall/connection', [
+        '.proplist' => 'dst-address,orig-bytes,repl-bytes,protocol'
+    ]);
+    $dnsCache = rosGet($API, '/ip/dns/cache', [
+        '.proplist' => 'name,data,ttl'
+    ]);
+
+    $ipDomains = [];
+    if (is_array($dnsCache)) {
+        foreach ($dnsCache as $entry) {
+            $ip = $entry['data'] ?? '';
+            $name = $entry['name'] ?? '';
+            if ($name === '' || !filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                continue;
+            }
+            if (!isset($ipDomains[$ip])) {
+                $ipDomains[$ip] = [];
+            }
+            if (count($ipDomains[$ip]) < 5 && !in_array($name, $ipDomains[$ip], true)) {
+                $ipDomains[$ip][] = $name;
+            }
+        }
+    }
+
+    $totalConnections = is_array($connections) ? count($connections) : 0;
+    $publicConnections = 0;
+    $totalActiveBytes = 0;
+    $uniqueIps = [];
+    $prefixes = [];
+
+    if (is_array($connections)) {
+        foreach ($connections as $c) {
+            $rawDst = (string)($c['dst-address'] ?? '');
+            $ip = explode(':', $rawDst)[0];
+            if (!filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                continue;
+            }
+
+            $publicConnections++;
+            $uniqueIps[$ip] = true;
+            $origBytes = (int)($c['orig-bytes'] ?? 0);
+            $replBytes = (int)($c['repl-bytes'] ?? 0);
+            $totalActiveBytes += ($origBytes + $replBytes);
+
+            $octets = explode('.', $ip);
+            $prefix = "{$octets[0]}.{$octets[1]}.{$octets[2]}.0/24";
+            if (!isset($prefixes[$prefix])) {
+                $prefixes[$prefix] = [
+                    'sample_ip'   => $ip,
+                    'connections' => 0,
+                    'orig_bytes'  => 0,
+                    'repl_bytes'  => 0,
+                    'total_bytes' => 0,
+                    'domains'     => [],
+                ];
+            }
+            $prefixes[$prefix]['connections']++;
+            $prefixes[$prefix]['orig_bytes'] += $origBytes;
+            $prefixes[$prefix]['repl_bytes'] += $replBytes;
+            $prefixes[$prefix]['total_bytes'] += ($origBytes + $replBytes);
+
+            if (isset($ipDomains[$ip]) && count($prefixes[$prefix]['domains']) < 3) {
+                foreach ($ipDomains[$ip] as $dom) {
+                    if (!in_array($dom, $prefixes[$prefix]['domains'], true)) {
+                        $prefixes[$prefix]['domains'][] = $dom;
+                        if (count($prefixes[$prefix]['domains']) >= 3) break;
+                    }
+                }
+            }
+        }
+    }
+
+    uasort($prefixes, function ($a, $b) {
+        return $b['connections'] <=> $a['connections'];
+    });
+
+    $topPrefixSlice = array_slice($prefixes, 0, 100, true);
+    $sampleIpMap = [];
+    foreach ($topPrefixSlice as $prefix => $info) {
+        $sampleIpMap[$prefix] = $info['sample_ip'];
+    }
+    $asnMap = resolvePrefixAsns($sampleIpMap);
+
+    $platforms = [];
+    $coveredConnections = 0;
+    $coveredBytes = 0;
+
+    foreach ($topPrefixSlice as $prefix => $info) {
+        $coveredConnections += $info['connections'];
+        $coveredBytes += $info['total_bytes'];
+
+        $meta = $asnMap[$prefix] ?? ['asn' => '-', 'platform' => "Unresolved ({$prefix})"];
+        $key = $meta['platform'];
+        if (!isset($platforms[$key])) {
+            $platforms[$key] = [
+                'platform'       => $meta['platform'],
+                'asn'            => $meta['asn'],
+                'connections'    => 0,
+                'upload_bytes'   => 0,
+                'download_bytes' => 0,
+                'total_bytes'    => 0,
+                'prefixes_count' => 0,
+                'sample_domains' => [],
+            ];
+        }
+        $platforms[$key]['connections'] += $info['connections'];
+        $platforms[$key]['upload_bytes'] += $info['orig_bytes'];
+        $platforms[$key]['download_bytes'] += $info['repl_bytes'];
+        $platforms[$key]['total_bytes'] += $info['total_bytes'];
+        $platforms[$key]['prefixes_count']++;
+        foreach ($info['domains'] as $dom) {
+            if (count($platforms[$key]['sample_domains']) < 3 && !in_array($dom, $platforms[$key]['sample_domains'], true)) {
+                $platforms[$key]['sample_domains'][] = $dom;
+            }
+        }
+    }
+
+    uasort($platforms, function ($a, $b) {
+        return $b['connections'] <=> $a['connections'];
+    });
+
+    $topPlatforms = [];
+    foreach (array_slice($platforms, 0, 20) as $p) {
+        $p['connection_share_percent'] = $publicConnections > 0 ? round(($p['connections'] / $publicConnections) * 100, 1) : 0.0;
+        $p['total_human'] = formatBytes($p['total_bytes']);
+        $topPlatforms[] = $p;
+    }
+
+    return [
+        'summary' => [
+            'total_connections'          => $totalConnections,
+            'public_connections'         => $publicConnections,
+            'unique_public_ips'          => count($uniqueIps),
+            'unique_prefixes_24'         => count($prefixes),
+            'analyzed_top_prefixes'      => count($topPrefixSlice),
+            'covered_connections'        => $coveredConnections,
+            'coverage_percent'           => $publicConnections > 0 ? round(($coveredConnections / $publicConnections) * 100, 1) : 0.0,
+            'total_active_traffic_bytes' => $totalActiveBytes,
+            'total_active_traffic_human' => formatBytes($totalActiveBytes),
+        ],
+        'top_platforms' => $topPlatforms,
+    ];
+}
+
 if ($routeScope === 'olt') {
     $olt = fetchOltPonStats($oltBaseUrl, $oltToken, $oltPortId, $timeout, $proxy);
     if (!$olt['ok']) {
@@ -646,11 +925,28 @@ if (in_array($routeScope, ['all', 'connection', 'usage'], true) && $pppoeUser ==
     ]);
 }
 
-$API = new RouterosRestClient($restUrl, $username, $password, $timeout, $proxy);
+$clientTimeout = ($routeScope === 'platforms') ? max($timeout, 15) : $timeout;
+$API = new RouterosRestClient($restUrl, $username, $password, $clientTimeout, $proxy);
 $connected = $API->connect();
 
 if ($connected) {
     try {
+        if ($routeScope === 'platforms') {
+            $platformStats = fetchGlobalPlatforms($API);
+            $API->disconnect();
+
+            respond(200, [
+                'status'      => 'UP',
+                'online'      => true,
+                'timestamp'   => date('c'),
+                'diagnostics' => [
+                    'router_connected' => true,
+                    'overall_health'   => 'ALL_SYSTEMS_OPERATIONAL',
+                ],
+                'platforms'   => $platformStats,
+            ]);
+        }
+
         if ($routeScope === 'connection') {
             $active = fetchPppoeActive($API, $pppoeUser);
             $secretInfo = fetchPppoeSecretAndLimit($API, $pppoeUser);

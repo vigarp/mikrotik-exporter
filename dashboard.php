@@ -355,6 +355,10 @@
           <span>OLT PON01</span>
           <span class="tab-endpoint">/olt</span>
         </button>
+        <button type="button" role="tab" id="tab-platforms" data-tab="platforms" aria-selected="false">
+          <span>Top Platforms</span>
+          <span class="tab-endpoint">/platforms</span>
+        </button>
       </div>
     </aside>
 
@@ -404,6 +408,17 @@
           <dl class="kv-list" id="olt-list"></dl>
         </article>
       </section>
+
+      <section role="tabpanel" id="panel-platforms" aria-labelledby="tab-platforms" hidden>
+        <article class="card">
+          <h2>Global Top Platforms (Active Snapshot)</h2>
+          <dl class="kv-list" id="platforms-summary-list"></dl>
+        </article>
+        <article class="card" style="margin-top: 1rem;">
+          <h2>Top Platforms by Active Connections</h2>
+          <dl class="kv-list" id="platforms-list"></dl>
+        </article>
+      </section>
     </main>
   </div>
 
@@ -415,6 +430,7 @@
       network: document.getElementById('panel-network'),
       router: document.getElementById('panel-router'),
       olt: document.getElementById('panel-olt'),
+      platforms: document.getElementById('panel-platforms'),
     };
 
     const statusBadge = document.getElementById('status-badge');
@@ -520,6 +536,24 @@
           ['Errors (RX / TX)', sum.rx_error_frames !== undefined ? `${sum.rx_error_frames} / ${sum.tx_error_frames}` : '-'],
           ['Discards (RX / TX)', sum.rx_discard_frames !== undefined ? `${sum.rx_discard_frames} / ${sum.tx_discard_frames}` : '-'],
         ]);
+      } else if (tabName === 'platforms') {
+        const pl = data.platforms || {};
+        const sum = pl.summary || {};
+        const rows = (pl.top_platforms || []).map((item, idx) => {
+          const doms = item.sample_domains?.length ? ` · ${item.sample_domains.join(', ')}` : '';
+          return [
+            `#${idx + 1} ${item.platform} (${item.asn})`,
+            `${item.connections} conn (${item.connection_share_percent}%) · ${item.total_human}${doms}`
+          ];
+        });
+        renderList('platforms-summary-list', [
+          ['Active Connections', sum.total_connections ?? '-'],
+          ['Public Connections', sum.public_connections ?? '-'],
+          ['Unique Public IPs / /24', sum.unique_public_ips !== undefined ? `${sum.unique_public_ips} IPs / ${sum.unique_prefixes_24} /24` : '-'],
+          ['Top-100 /24 Coverage', sum.coverage_percent !== undefined ? `${sum.coverage_percent}% (${sum.covered_connections} conn)` : '-'],
+          ['Total Active Traffic', sum.total_active_traffic_human || '-'],
+        ]);
+        renderList('platforms-list', rows.length ? rows : [['Status', 'No active platform data']]);
       }
     }
 
