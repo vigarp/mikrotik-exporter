@@ -71,6 +71,9 @@ $enableLog   = getenv('ENABLE_LOG') !== false
              ? (filter_var(getenv('ENABLE_LOG') ?: ($_ENV['ENABLE_LOG'] ?? true), FILTER_VALIDATE_BOOLEAN))
              : true;
 $oltBaseUrl  = rtrim(trim(getenv('OLT_BASE_URL') ?: ($_ENV['OLT_BASE_URL'] ?? ($_SERVER['OLT_BASE_URL'] ?? ''))), '/');
+$oltUser     = trim(getenv('OLT_USER') ?: ($_ENV['OLT_USER'] ?? ($_SERVER['OLT_USER'] ?? '')));
+$oltPass     = getenv('OLT_PASS') ?: ($_ENV['OLT_PASS'] ?? ($_SERVER['OLT_PASS'] ?? ''));
+$oltLoginKey = trim(getenv('OLT_LOGIN_KEY') ?: ($_ENV['OLT_LOGIN_KEY'] ?? ($_SERVER['OLT_LOGIN_KEY'] ?? '')));
 $oltToken    = trim(getenv('OLT_TOKEN') ?: ($_ENV['OLT_TOKEN'] ?? ($_SERVER['OLT_TOKEN'] ?? '')));
 $oltPortId   = (int)($_GET['port_id'] ?? (getenv('OLT_PORT_ID') ?: ($_ENV['OLT_PORT_ID'] ?? ($_SERVER['OLT_PORT_ID'] ?? 1))));
 
@@ -475,23 +478,67 @@ function fetchRouterSystem($API) {
     ];
 }
 
-function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
-    if ($oltBaseUrl === '' || $oltToken === '') {
-        return [
-            'ok'          => false,
-            'status_code' => 400,
-            'error'       => 'OLT_BASE_URL or OLT_TOKEN is not configured in .env'
-        ];
+function loginHsgqOlt($oltBaseUrl, $oltUser, $oltPass, $oltLoginKey, $timeout, $proxy) {
+    if ($oltUser === '' || $oltPass === '') {
+        return ['ok' => false, 'error' => 'OLT_USER or OLT_PASS is not configured for auto-login'];
     }
 
-    if ($portId <= 0) {
-        return [
-            'ok'          => false,
-            'status_code' => 400,
-            'error'       => 'Invalid OLT port_id'
-        ];
+    $key = $oltLoginKey !== '' ? $oltLoginKey : md5($oltUser . ':' . $oltPass);
+    $payload = json_encode([
+        'method' => 'set',
+        'param'  => [
+            'name'      => $oltUser,
+            'key'       => $key,
+            'value'     => base64_encode($oltPass),
+            'captcha_v' => '',
+            'captcha_f' => '',
+        ],
+    ]);
+
+    $responseToken = '';
+    $ch = curl_init("{$oltBaseUrl}/userlogin?form=login");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_CONNECTTIMEOUT => $timeout,
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_HTTPHEADER     => ['Content-Type: application/json', 'Accept: application/json'],
+        CURLOPT_HEADERFUNCTION => function ($ch, $headerLine) use (&$responseToken) {
+            if (stripos($headerLine, 'X-Token:') === 0) {
+                $responseToken = trim(substr($headerLine, 8));
+            }
+            return strlen($headerLine);
+        },
+    ]);
+    if ($proxy !== '') {
+        curl_setopt($ch, CURLOPT_PROXY, $proxy);
     }
 
+    $raw = curl_exec($ch);
+    $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+
+    if ($raw === false || $httpCode === 0) {
+        return ['ok' => false, 'error' => 'Unable to reach HSGQ OLT login: ' . ($curlErr ?: 'connection failed')];
+    }
+
+    $json = json_decode($raw, true);
+    if (!is_array($json) || ($json['code'] ?? null) !== 1 || $responseToken === '') {
+        $msg = $json['message'] ?? 'login failed';
+        return ['ok' => false, 'error' => "HSGQ OLT login failed (HTTP {$httpCode}): {$msg}"];
+    }
+
+    @file_put_contents('/tmp/olt_token_cache.json', json_encode([
+        'token' => $responseToken,
+        'ts'    => time(),
+    ]));
+
+    return ['ok' => true, 'token' => $responseToken];
+}
+
+function requestOltPonJson($oltBaseUrl, $token, $portId, $timeout, $proxy) {
     $url = "{$oltBaseUrl}/switch_port?form=statistic_monitor&port_id={$portId}";
     $ch = curl_init($url);
     curl_setopt_array($ch, [
@@ -499,7 +546,7 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
         CURLOPT_CONNECTTIMEOUT => $timeout,
         CURLOPT_TIMEOUT        => $timeout,
         CURLOPT_HTTPHEADER     => [
-            'x-token: ' . $oltToken,
+            'x-token: ' . $token,
             'Accept: application/json'
         ],
     ]);
@@ -515,6 +562,7 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
     if ($raw === false || $httpCode === 0) {
         return [
             'ok'          => false,
+            'auth_failed' => false,
             'status_code' => 503,
             'error'       => 'Unable to reach HSGQ OLT: ' . ($curlErr ?: 'connection failed')
         ];
@@ -523,8 +571,9 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
     if ($httpCode === 401 || $httpCode === 403) {
         return [
             'ok'          => false,
+            'auth_failed' => true,
             'status_code' => 503,
-            'error'       => "HSGQ OLT rejected token (HTTP {$httpCode}); update OLT_TOKEN in .env"
+            'error'       => "HSGQ OLT rejected token (HTTP {$httpCode})"
         ];
     }
 
@@ -532,6 +581,7 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
     if (!is_array($json)) {
         return [
             'ok'          => false,
+            'auth_failed' => false,
             'status_code' => 502,
             'error'       => "Invalid JSON response from HSGQ OLT (HTTP {$httpCode})"
         ];
@@ -541,10 +591,66 @@ function fetchOltPonStats($oltBaseUrl, $oltToken, $portId, $timeout, $proxy) {
         $msg = $json['message'] ?? 'unknown error';
         return [
             'ok'          => false,
+            'auth_failed' => true,
             'status_code' => 503,
-            'error'       => "HSGQ OLT error (code=" . ($json['code'] ?? 'null') . "): {$msg} (token may have expired)"
+            'error'       => "HSGQ OLT error (code=" . ($json['code'] ?? 'null') . "): {$msg}"
         ];
     }
+
+    return ['ok' => true, 'json' => $json];
+}
+
+function fetchOltPonStats($oltBaseUrl, $oltToken, $oltUser, $oltPass, $oltLoginKey, $portId, $timeout, $proxy) {
+    if ($oltBaseUrl === '') {
+        return [
+            'ok'          => false,
+            'status_code' => 400,
+            'error'       => 'OLT_BASE_URL is not configured in .env'
+        ];
+    }
+
+    if ($portId <= 0) {
+        return [
+            'ok'          => false,
+            'status_code' => 400,
+            'error'       => 'Invalid OLT port_id'
+        ];
+    }
+
+    $cacheFile = '/tmp/olt_token_cache.json';
+    $token = '';
+    if (file_exists($cacheFile)) {
+        $cached = json_decode((string)@file_get_contents($cacheFile), true);
+        if (!empty($cached['token'])) {
+            $token = (string)$cached['token'];
+        }
+    }
+    if ($token === '' && $oltToken !== '') {
+        $token = $oltToken;
+    }
+
+    if ($token === '') {
+        $login = loginHsgqOlt($oltBaseUrl, $oltUser, $oltPass, $oltLoginKey, $timeout, $proxy);
+        if (!$login['ok']) {
+            return ['ok' => false, 'status_code' => 503, 'error' => $login['error']];
+        }
+        $token = $login['token'];
+    }
+
+    $res = requestOltPonJson($oltBaseUrl, $token, $portId, $timeout, $proxy);
+    if (!$res['ok'] && !empty($res['auth_failed']) && $oltUser !== '' && $oltPass !== '') {
+        $login = loginHsgqOlt($oltBaseUrl, $oltUser, $oltPass, $oltLoginKey, $timeout, $proxy);
+        if (!$login['ok']) {
+            return ['ok' => false, 'status_code' => 503, 'error' => $login['error']];
+        }
+        $res = requestOltPonJson($oltBaseUrl, $login['token'], $portId, $timeout, $proxy);
+    }
+
+    if (!$res['ok']) {
+        return ['ok' => false, 'status_code' => $res['status_code'], 'error' => $res['error']];
+    }
+
+    $json = $res['json'];
 
     $data = $json['data'];
     $times = $data['monitor_time'] ?? [];
@@ -1199,7 +1305,7 @@ function fetchInsightsRouting($API) {
 }
 
 if ($routeScope === 'olt') {
-    $olt = fetchOltPonStats($oltBaseUrl, $oltToken, $oltPortId, $timeout, $proxy);
+    $olt = fetchOltPonStats($oltBaseUrl, $oltToken, $oltUser, $oltPass, $oltLoginKey, $oltPortId, $timeout, $proxy);
     if (!$olt['ok']) {
         respond($olt['status_code'], [
             'status'      => 'DOWN',

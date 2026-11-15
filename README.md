@@ -42,7 +42,10 @@ ENABLE_LOG=true
 
 # HSGQ OLT Monitoring
 OLT_BASE_URL=http://10.0.1.2
-OLT_TOKEN=your_olt_x_token
+OLT_USER=root
+OLT_PASS=your_olt_password
+OLT_LOGIN_KEY=
+OLT_TOKEN=
 OLT_PORT_ID=1
 ```
 
