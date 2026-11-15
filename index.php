@@ -28,7 +28,7 @@ $host        = getenv('MIKROTIK_HOST') ?: ($_ENV['MIKROTIK_HOST'] ?? ($_SERVER['
 $port        = (int)(getenv('MIKROTIK_PORT') ?: ($_ENV['MIKROTIK_PORT'] ?? ($_SERVER['MIKROTIK_PORT'] ?? 8728)));
 $username    = getenv('MIKROTIK_USER') ?: ($_ENV['MIKROTIK_USER'] ?? ($_SERVER['MIKROTIK_USER'] ?? 'admin'));
 $password    = getenv('MIKROTIK_PASS') ?: ($_ENV['MIKROTIK_PASS'] ?? ($_SERVER['MIKROTIK_PASS'] ?? ''));
-$pppoeUser   = $_GET['user'] ?? (getenv('MIKROTIK_PPPOE_USER') ?: ($_ENV['MIKROTIK_PPPOE_USER'] ?? ($_SERVER['MIKROTIK_PPPOE_USER'] ?? 'vigarrRT03')));
+$pppoeUser   = trim($_GET['user'] ?? (getenv('MIKROTIK_PPPOE_USER') ?: ($_ENV['MIKROTIK_PPPOE_USER'] ?? ($_SERVER['MIKROTIK_PPPOE_USER'] ?? ''))));
 $cfToken     = getenv('CLOUDFLARE_RADAR_TOKEN') ?: ($_ENV['CLOUDFLARE_RADAR_TOKEN'] ?? ($_SERVER['CLOUDFLARE_RADAR_TOKEN'] ?? null));
 $enableIntel = (isset($_GET['enrich']) && ($_GET['enrich'] === 'true' || $_GET['enrich'] === '1'))
              || (isset($_GET['intel']) && ($_GET['intel'] === 'true' || $_GET['intel'] === '1'))
@@ -60,10 +60,11 @@ function respond($status_code, $data) {
     exit;
 }
 
-// Helper to format rate limit string like "10M/10M" or bps into Mbps
+// Helper to format rate limit string like "10M/10M" (or with burst "10M/10M 20M/20M ...") into Mbps
 function parseRateLimit($rateStr) {
     if (!$rateStr) return null;
-    $parts = explode('/', $rateStr);
+    $baseRate = explode(' ', trim($rateStr))[0];
+    $parts = explode('/', $baseRate);
     $rx = $parts[0] ?? null;
     $tx = $parts[1] ?? null;
 
@@ -161,9 +162,20 @@ function getIpIntelligence($publicIp, $cfToken = null) {
     return $info;
 }
 
+if ($pppoeUser === '') {
+    respond(400, [
+        'status'    => 'ERROR',
+        'online'    => false,
+        'timestamp' => date('c'),
+        'message'   => 'Target PPPoE user is not configured (set MIKROTIK_PPPOE_USER or pass ?user=...)'
+    ]);
+}
+
 $API = new RouterosAPI();
 $API->port = $port;
 $API->timeout = $timeout;
+$API->attempts = 2;
+$API->delay = 1;
 
 if ($API->connect($host, $username, $password)) {
     try {
@@ -212,8 +224,8 @@ if ($API->connect($host, $username, $password)) {
                     $rxBps = (int)($traffic[0]['rx-bits-per-second'] ?? 0);
                     $trafficData = [
                         'interface_name' => $ifaceName,
-                        'upload_kbps'   => round($txBps / 1000, 2),
-                        'download_kbps' => round($rxBps / 1000, 2),
+                        'upload_kbps'   => round($rxBps / 1000, 2),
+                        'download_kbps' => round($txBps / 1000, 2),
                         'tx_bps'        => $txBps,
                         'rx_bps'        => $rxBps
                     ];

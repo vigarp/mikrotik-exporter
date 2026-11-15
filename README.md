@@ -67,6 +67,13 @@ ENABLE_LOG=true
     "status": "UP",
     "online": true,
     "timestamp": "2026-08-25T15:00:00+07:00",
+    "diagnostics": {
+        "router_connected": true,
+        "router_status": "ONLINE",
+        "user_pppoe_status": "ONLINE",
+        "isp_gateway_status": "REACHABLE",
+        "overall_health": "ALL_SYSTEMS_OPERATIONAL"
+    },
     "home_connection": {
         "user": "your_pppoe_user",
         "ip_address": "10.0.0.100",
@@ -125,14 +132,22 @@ ENABLE_LOG=true
 }
 ```
 
-### 🔴 `503 Service Unavailable` (User Offline - Uptime Kuma DOWN):
+### 🔴 `503 Service Unavailable` (Router Unreachable - Uptime Kuma DOWN):
+*(Note: If the router is reachable but the PPPoE user is offline, `503` is also returned with `diagnostics.overall_health = "USER_DISCONNECTED"` along with `home_connection` and `network_health` payloads.)*
 ```json
 {
     "status": "DOWN",
     "online": false,
     "user": "your_pppoe_user",
     "timestamp": "2026-08-25T15:00:00+07:00",
-    "message": "PPPoE user 'your_pppoe_user' is offline or disconnected"
+    "diagnostics": {
+        "router_connected": false,
+        "router_status": "OFFLINE",
+        "user_pppoe_status": "UNKNOWN",
+        "isp_gateway_status": "UNKNOWN",
+        "overall_health": "ROUTER_UNREACHABLE"
+    },
+    "message": "Unable to connect to RouterOS API"
 }
 ```
 
